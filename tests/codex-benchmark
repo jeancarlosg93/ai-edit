@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""Measure synthetic rewrites through Codex app-server with reduced context."""
+
+import argparse
+import json
+import os
+import pathlib
+import queue
+import shutil
+import signal
+import subprocess
+import tempfile
+import threading
+import time
+import tomllib
+
+p = argparse.ArgumentParser(description=__doc__)
+p.add_argument("model")
+p.add_argument("--effort", default="low")
+p.add_argument("--tier", choices=["default", "priority"], default="default")
+p.add_argument("--probe", action="store_true")
+p.add_argument("--inspect", action="store_true", help="Check context without a rewrite")
+p.add_argument("--output", type=pathlib.Path, required=True)
+args = p.parse_args()
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+TEMP = tempfile.TemporaryDirectory(prefix='ai-edit-codex-benchmark-')
+WORK = pathlib.Path(TEMP.name)
+SYSTEM = (ROOT / 'system-prompt.txt').read_text().strip()
+CONFIG = tomllib.loads((ROOT / 'config.toml').read_text())
+ACTIONS = {a['key']: a['instruction'] for a in CONFIG['action']}
+CODEX_DIR = pathlib.Path(os.environ.get('CODEX_HOME', pathlib.Path.home() / '.codex')).resolve()
+AUTH = CODEX_DIR / 'auth.json'
+if not AUTH.is_file():
+    p.error('This benchmark requires existing file-based Codex authentication')
+if not shutil.which('bwrap'):
+    p.error('This Linux benchmark requires bwrap')
+CATALOG = CODEX_DIR / 'models_cache.json'
+if not CATALOG.is_file():
+    p.error('Start Codex once to populate its model catalog')
+model = next((m for m in json.loads(CATALOG.read_text())['models']
+              if m['slug'] == args.model), None)
+if model is None:
+    p.error('Requested model is missing from the local Codex model catalog')
+model.update(tool_mode='direct', multi_agent_version='v1',
+             experimental_supported_tools=[], apply_patch_tool_type=None)
+model.pop('model_messages', None)
+model['base_instructions'] = SYSTEM
+MODEL_FILE = WORK / 'models.json'
+MODEL_FILE.write_text(json.dumps({'models': [model]}))
+TIER = args.tier
+VARIANT = 'isolated-text'
+OVERRIDES = {
+    'model': args.model, 'model_reasoning_effort': args.effort,
+    'service_tier': TIER, 'project_doc_max_bytes': 0,
+    'approval_policy': 'never', 'sandbox_mode': 'read-only',
+    'web_search': 'disabled', 'features.hooks': False,
+    'features.shell_tool': False, 'features.code_mode': False,
+    'features.multi_agent': False, 'features.apps': False,
+    'features.memories': False, 'apps._default.enabled': False,
+    'history.persistence': 'none',
+    'model_catalog_json': str(MODEL_FILE),
+    'model_instructions_file': str(ROOT / 'system-prompt.txt'),
+    'tools.update_plan.enabled': False,
+    'tools.experimental_request_user_input.enabled': False,
+}
+OVERRIDES.update({
+    'features.skip_host_skill_discovery': True,
+    'skills.include_instructions': False,
+    'include_apps_instructions': False,
+    'include_collaboration_mode_instructions': False,
+    'include_environment_context': False,
+    'features.multi_agent_v2.enabled': False,
+    'features.multi_agent_v2.usage_hint_enabled': False,
+    'features.multi_agent_v2.root_agent_usage_hint_text': '',
+    'features.multi_agent_v2.usage_hint_text': '',
+    'features.multi_agent_v2.multi_agent_mode_hint_text': '',
+})
+for name in ['plugins', 'code_mode_host', 'goals', 'sleep_tool',
+             'image_generation', 'view_image', 'browser_use', 'computer_use',
+             'unified_exec', 'skill_search', 'tool_suggest', 'shell_snapshot',
+             'workspace_dependencies']:
+    OVERRIDES['features.' + name] = False
+
+
+def codex_command(*arguments):
+    command = [str(pathlib.Path(shutil.which('codex')).resolve()), *arguments]
+    for key, value in OVERRIDES.items():
+        command += ['-c', key + '=' + json.dumps(value)]
+    # Mask the entire config directory, including AGENTS.override.md and symlinks.
+    return ['bwrap', '--die-with-parent', '--ro-bind', '/', '/',
+            '--tmpfs', str(CODEX_DIR),
+            '--ro-bind', str(AUTH), str(AUTH),
+            '--bind', str(WORK), str(WORK), '--proc', '/proc', '--dev', '/dev',
+            '--', *command]
+
+
+def check_context():
+    result = subprocess.run(
+        codex_command('debug', 'prompt-input', 'Synthetic benchmark input.'),
+        cwd=WORK, capture_output=True, text=True, check=True, timeout=30)
+    messages = json.loads(result.stdout)
+    summary = []
+    for message in messages:
+        content = ''.join(part.get('text', '') for part in message.get('content', []))
+        allowed = (message.get('role') == 'developer'
+                   and content.startswith('<permissions instructions>'))
+        allowed |= (message.get('role') == 'user'
+                    and content == 'Synthetic benchmark input.')
+        if not allowed:
+            raise RuntimeError('Unexpected extra context in Codex prompt')
+        summary.append({'role': message['role'], 'characters': len(content)})
+    return summary
+
+
+class Server:
+    def __init__(self):
+        self.q = queue.Queue()
+        self.stderr = []
+        self.seq = 0
+        self.start = time.perf_counter()
+        cmd = codex_command('app-server', '--strict-config', '--listen', 'stdio://')
+        self.p = subprocess.Popen(cmd, cwd=WORK, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, bufsize=1, start_new_session=True)
+        threading.Thread(target=self.read, daemon=True).start()
+        threading.Thread(target=lambda: self.stderr.extend(self.p.stderr.readlines()), daemon=True).start()
+        try:
+            self.rpc('initialize', {'clientInfo': {'name': 'ai_edit_latency_benchmark', 'version': '0.1'}, 'capabilities': {'experimentalApi': True}})
+            self.send({'method': 'initialized'})
+        except BaseException:
+            self.close()
+            raise
+        self.ready_seconds = time.perf_counter() - self.start
+
+    def read(self):
+        for line in self.p.stdout:
+            try:
+                self.q.put((time.perf_counter(), json.loads(line)))
+            except ValueError:
+                pass
+        self.q.put((time.perf_counter(), {'eof': True}))
+
+    def send(self, obj):
+        self.p.stdin.write(json.dumps(obj) + '\n')
+        self.p.stdin.flush()
+
+    def next(self, timeout=60):
+        stamp, obj = self.q.get(timeout=timeout)
+        if obj.get('eof'):
+            raise RuntimeError('Server exited: '+''.join(self.stderr)[-2000:])
+        if 'method' in obj and 'id' in obj:
+            self.send({'id': obj['id'], 'error': {'code': -32601, 'message': 'No tools or approvals in benchmark'}})
+            raise RuntimeError('Unexpected server request: '+obj['method'])
+        return stamp, obj
+
+    def rpc(self, method, params):
+        self.seq += 1
+        seq = self.seq
+        self.send({'id':seq,'method':method,'params':params})
+        deadline = time.perf_counter()+60
+        while True:
+            _, obj = self.next(max(0.01,deadline-time.perf_counter()))
+            if obj.get('id') == seq:
+                if 'error' in obj:
+                    raise RuntimeError(json.dumps(obj['error']))
+                return obj.get('result',{})
+
+    def run(self, model, effort, sample, phase):
+        action, name, text = sample
+        start = time.perf_counter()
+        result = self.rpc('thread/start', {
+            'model':model, 'allowProviderModelFallback':False,
+            'cwd':str(WORK), 'ephemeral':True, 'approvalPolicy':'never',
+            'sandbox':'read-only', 'baseInstructions':SYSTEM,
+            'developerInstructions':'', 'environments':[], 'dynamicTools':[],
+            'selectedCapabilityRoots':[], 'serviceTier':TIER,
+            'config':{'model_reasoning_effort':effort, 'project_doc_max_bytes':0},
+        })
+        thread = result['thread']['id']
+        thread_ready = time.perf_counter()
+        self.rpc('turn/start', {'threadId':thread,'effort':effort,
+            'serviceTierForTurn':TIER,'environments':[],
+            'input':[{'type':'text','text':ACTIONS[action]+'\n\n<text>\n'+text+'\n</text>','text_elements':[]}]})
+        first = None
+        chunks = []
+        final = []
+        usage = None
+        items = []
+        error = None
+        deadline=time.perf_counter()+60
+        while True:
+            stamp,obj=self.next(max(0.01,deadline-time.perf_counter()))
+            method = obj.get('method', '')
+            params = obj.get('params', {})
+            if params.get('threadId') != thread:
+                continue
+            if method == 'item/agentMessage/delta':
+                first = first or stamp
+                chunks.append(params.get('delta', ''))
+            if method == 'item/completed':
+                item = params.get('item', {})
+                items.append(item.get('type'))
+                if item.get('type') == 'agentMessage':
+                    final.append(item.get('text', ''))
+            if method == 'thread/tokenUsage/updated':
+                usage = params.get('tokenUsage')
+            if method == 'error':
+                error = params
+            if method == 'turn/completed':
+                turn = params['turn']
+                end = stamp
+                row={'model':model,'effort':effort,'tier':TIER,'variant':VARIANT,'phase':phase,'sample':name,
+                     'server_ready_s':round(self.ready_seconds,3),
+                     'thread_setup_s':round(thread_ready-start,3),
+                     'first_text_s':round(first-start,3) if first else None,
+                     'complete_s':round(end-start,3),'status':turn['status'],
+                     'actual_model':result.get('model'),'actual_tier':result.get('serviceTier'),
+                     'output':'\n'.join(final) or ''.join(chunks),
+                     'usage':usage,'items':items,'error':turn.get('error') or error}
+                print(json.dumps(row,ensure_ascii=False),flush=True)
+                return row
+
+    def close(self):
+        if self.p.poll() is None:
+            os.killpg(self.p.pid,signal.SIGTERM)
+            try:
+                self.p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(self.p.pid, signal.SIGKILL)
+                self.p.wait()
+
+SAMPLES=[
+ ('f','english_short','I has recieved your mesage and will reply tomorow.'),
+ ('f','dutch_short','Ik heb de wijzigingen gecontrolleerd en alles werk nu goed.'),
+ ('f','very_short','Dat gebeurd morgen.'),
+ ('i','improve','We need to move the meeting because the report is not ready yet and we need the report for the meeting, so can we do Thursday instead?'),
+ ('e','translate','Kun je de bijgewerkte planning voor vrijdag doorsturen? Dan kan ik die nog met het team bespreken.'),
+ ('f','multiline','Hi Alex,\n\nThanks for you help yesterday. The changes is ready, but I havent tested the last part yet.\n\nCan you take a look tomorow?'),
+]
+
+if __name__ == '__main__':
+    rows = []
+    context = check_context()
+    if args.inspect:
+        args.output.write_text(json.dumps(context, indent=2) + '\n')
+        print(json.dumps(context))
+        TEMP.cleanup()
+        raise SystemExit(0)
+    server = Server()
+    try:
+        server.rpc('model/list', {'limit': 100})
+        time.sleep(2)
+        for i, sample in enumerate(SAMPLES[:1] if args.probe else SAMPLES * 2):
+            row = server.run(args.model, args.effort, sample,
+                             'first' if i == 0 else 'warm')
+            rows.append(row)
+            if row['status'] != 'completed':
+                raise RuntimeError('Rewrite failed: ' + str(row['error']))
+            if row['actual_model'] != args.model or row['actual_tier'] != TIER:
+                raise RuntimeError('Unexpected model or service tier')
+            if set(row['items']) - {'userMessage', 'agentMessage', 'reasoning'}:
+                raise RuntimeError('Unexpected tool use')
+            time.sleep(1)
+    finally:
+        server.close()
+        args.output.write_text(json.dumps({
+            'codex_version': subprocess.check_output(['codex', '--version'], text=True).strip(),
+            'system_prompt': SYSTEM,
+            'actions': ACTIONS,
+            'samples': SAMPLES,
+            'context_overrides': {**OVERRIDES, 'model_catalog_json': '<temporary model catalog>',
+                                  'model_instructions_file': 'system-prompt.txt'},
+            'catalog_overrides': {'tool_mode': 'direct', 'multi_agent_version': 'v1',
+                                  'experimental_supported_tools': [], 'apply_patch_tool_type': None},
+            'context_check': context,
+            'results': rows,
+        }, ensure_ascii=False, indent=2) + '\n')
+        TEMP.cleanup()

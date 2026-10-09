@@ -1,0 +1,688 @@
+#!/bin/bash
+# AI Edit: rewrite the selected text and show the difference before pasting.
+set -uo pipefail
+
+PLUGIN_DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+CONFIG_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/ai-edit
+STATE_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ai-edit
+SESSION=$STATE_DIR/session.json
+RESULT=$STATE_DIR/result.txt
+CAPTURE=$STATE_DIR/capture.txt
+ORIGINAL=$STATE_DIR/original.txt
+DIFF=$STATE_DIR/diff.json
+SAVED_TYPE=$STATE_DIR/clipboard.type
+SAVED_DATA=$STATE_DIR/clipboard.data
+LOCK=$STATE_DIR/lock
+HISTORY=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/clipboard-history.json
+COPY_WAIT_MS=250
+
+umask 077
+
+die() {
+  echo "ai-edit: $*" >&2
+  exit 1
+}
+
+# Capture and insert both borrow the clipboard; one at a time, or the second
+# saves the first one's temporary contents as the clipboard to restore.
+# wl-copy stays behind to serve the clipboard and would inherit the lock, so
+# every wl-copy and background job runs with descriptor 9 closed.
+take_lock() {
+  exec 9>"$LOCK"
+  flock "$@" 9
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ai-edit <command>
+  open        capture the selection and show the overlay (or close it)
+  compose     show the overlay with an empty field to type into (or close it)
+  capture     copy the selection of the focused window into the session
+  run <id> [--insert | --diff]
+              rewrite with the action <id>; text from stdin, or the captured
+              selection when stdin is a terminal. --insert pastes the result
+              instead of printing it, --diff prints the diff. The id - takes
+              the instruction from $AI_EDIT_INSTRUCTION
+  diff        the word diff of the last run as JSON
+  state       config, actions and session as JSON, for the overlay
+  actions     the actions as JSON, with model and preview resolved
+  insert      paste the result over the selection
+  copy        put the result on the clipboard
+  set-result  make the text on stdin the result (going back a step)
+  compare     store {original, result} from stdin and print the diff
+  selftest    check the copy loop and the session files without a compositor
+EOF
+}
+
+now_ms() {
+  printf '%s' $(($(date +%s%N) / 1000000))
+}
+
+# --------------------------------------------------------------- compositor
+
+# none, terminal, xwayland or wayland, from `hyprctl activewindow -j` on stdin.
+# The terminal tag comes from Omarchy's apps/terminals.lua; dynamic tags carry
+# a trailing "*".
+window_kind() {
+  local kind
+  kind=$(jq -r 'if (.address // "") == "" then "none"
+    elif any(.tags[]?; sub("\\*$"; "") == "terminal") then "terminal"
+    elif .xwayland then "xwayland"
+    else "wayland" end' 2>/dev/null)
+  printf '%s' "${kind:-none}"
+}
+
+# The compositor sends the chord with exactly these modifiers, whatever is
+# still physically held from the keybinding. Down and up are split because a
+# single send_shortcut can leave the synthetic key stuck.
+send_chord() {
+  local mods="$1" key="$2"
+  hyprctl dispatch "hl.dsp.send_key_state({ mods = '$mods', key = '$key', state = 'down' })" >/dev/null
+  sleep 0.05
+  hyprctl dispatch "hl.dsp.send_key_state({ mods = '$mods', key = '$key', state = 'up' })" >/dev/null
+}
+
+# Terminals copy and paste on Ctrl+Insert and Shift+Insert: Ctrl+C is an
+# interrupt there. Omarchy configures every terminal it ships that way.
+press() {
+  local action="$1" kind="$2"
+  case "$kind:$action" in
+    terminal:copy) send_chord CTRL Insert ;;
+    terminal:paste) send_chord SHIFT Insert ;;
+    *:copy) send_chord CTRL C ;;
+    *:paste) send_chord CTRL V ;;
+  esac
+}
+
+focus_window() {
+  hyprctl dispatch "hl.dsp.focus({ window = 'address:$1' })" >/dev/null
+}
+
+window_exists() {
+  hyprctl clients -j 2>/dev/null | jq -e --arg address "$1" 'any(.[]; .address == $address)' >/dev/null
+}
+
+# --------------------------------------------------------------- clipboard
+
+# Through files, never a variable: bash drops NUL bytes, and an image on the
+# clipboard would come back broken. One type is kept, the richest one an app
+# is likely to want back.
+save_clipboard() {
+  local types type
+  rm -f "$SAVED_TYPE" "$SAVED_DATA"
+  types=$(wl-paste --list-types 2>/dev/null) || return 0
+  [[ -n $types ]] || return 0
+  type=$(grep -m1 -E '^image/png$' <<<"$types" ||
+    grep -m1 -E '^text/plain;charset=utf-8$' <<<"$types" ||
+    head -1 <<<"$types")
+  wl-paste --no-newline --type "$type" >"$SAVED_DATA" 2>/dev/null || return 0
+  # A password manager marks what it copies, and the clipboard history skips
+  # it; the restored copy has to carry the same mark.
+  if grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
+    printf '%s\nsensitive\n' "$type" >"$SAVED_TYPE"
+  else
+    printf '%s\n' "$type" >"$SAVED_TYPE"
+  fi
+}
+
+restore_clipboard() {
+  if [[ -s $SAVED_TYPE && -s $SAVED_DATA ]]; then
+    local type sensitive
+    { read -r type; read -r sensitive; } <"$SAVED_TYPE"
+    wl-copy --type "$type" ${sensitive:+--sensitive} <"$SAVED_DATA" 9>&-
+  else
+    wl-copy --clear 9>&-
+  fi
+  rm -f "$SAVED_TYPE" "$SAVED_DATA"
+}
+
+# --------------------------------------------------------------- capture
+
+# One press is enough: on Brave, Slack (XWayland) and foot, with Super still
+# held from the keybinding, the copy landed within 0.1 s every time. Nothing
+# on the clipboard after COPY_WAIT_MS means nothing is selected, and that
+# wait is what opening an empty field costs.
+copy_selection() {
+  local kind="$1" deadline
+  : >"$CAPTURE"
+  press copy "$kind"
+  deadline=$(($(now_ms) + COPY_WAIT_MS))
+  while (($(now_ms) < deadline)); do
+    sleep 0.025
+    if wl-paste --list-types 2>/dev/null | grep -qiE '^(text/|UTF8_STRING$)'; then
+      wl-paste --no-newline --type text >"$CAPTURE" 2>/dev/null
+      [[ -s $CAPTURE ]] && return 0
+    fi
+  done
+  return 1
+}
+
+# Writes the session from $CAPTURE; an empty capture is compose mode, which
+# has no window to paste into.
+# Whether the focus is in a text field, where a paste can replace the
+# selection: fcitx5 keeps an input context per text field, Wayland and X11
+# alike, and marks the focused one. Selected page text has none focused.
+# Without fcitx5 the answer is unknown and AI Edit pastes as before.
+focused_input() {
+  local info
+  info=$(busctl --user call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1 DebugInfo 2>/dev/null) ||
+    { echo unknown; return; }
+  [[ $info == *"focus:1"* ]] && echo yes || echo no
+}
+
+write_session() {
+  local address="$1" kind="$2" editable="${3:-unknown}" source=selection
+  if [[ ! -s $CAPTURE ]]; then
+    source=compose address="" kind=none
+    : >"$CAPTURE"
+  fi
+  jq -n --rawfile text "$CAPTURE" --arg source "$source" --arg address "$address" --arg kind "$kind" \
+    --arg editable "$editable" \
+    '{text: $text, source: $source, address: $address, editable: $editable,
+      xwayland: ($kind == "xwayland"), terminal: ($kind == "terminal")}' >"$SESSION.new" &&
+    mv "$SESSION.new" "$SESSION"
+  rm -f "$CAPTURE"
+}
+
+# Omarchy's clipboard history records the copy capture makes, which would put
+# the selection on disk even when the overlay is cancelled. Remove that entry
+# once it lands (the watcher takes a moment), unless the same text was in the
+# history before: then the user copied it, not AI Edit. The entry is on disk
+# for that moment; nothing on the copying side can keep the watcher away.
+forget_capture() {
+  local before=$STATE_DIR/history.before text=$STATE_DIR/forget.txt
+  [[ -s $before ]] || printf '[]' >"$before"
+  if jq -e --rawfile text "$text" 'any(.[]?; .type == "text" and .text == $text)' "$before" >/dev/null 2>&1; then
+    rm -f "$before" "$text"
+    return
+  fi
+  local tries
+  for tries in {1..30}; do
+    sleep 0.1
+    if [[ -s $HISTORY ]] &&
+      jq -e --rawfile text "$text" 'any(.[]?; .type == "text" and .text == $text)' "$HISTORY" >/dev/null 2>&1; then
+      jq --rawfile text "$text" 'map(select(.type != "text" or .text != $text))' "$HISTORY" >"$HISTORY.ai-edit" &&
+        mv "$HISTORY.ai-edit" "$HISTORY"
+      break
+    fi
+  done
+  rm -f "$before" "$text" "$HISTORY.ai-edit"
+}
+
+# Never falls back to PRIMARY: it holds the last selection made anywhere, so a
+# window with nothing selected would come back with some other window's text.
+capture() {
+  mkdir -p "$STATE_DIR"
+  local window kind address editable=unknown
+  window=$(hyprctl activewindow -j 2>/dev/null)
+  kind=$(window_kind <<<"$window")
+  address=$(jq -r '.address // ""' <<<"$window" 2>/dev/null)
+  rm -f "$RESULT"
+  : >"$CAPTURE"
+  if [[ $kind != none ]]; then
+    editable=$(focused_input)
+    [[ -s $HISTORY ]] && cp "$HISTORY" "$STATE_DIR/history.before"
+    save_clipboard
+    trap restore_clipboard EXIT
+    wl-copy --clear 9>&-
+    copy_selection "$kind"
+    restore_clipboard
+    trap - EXIT
+    if [[ -s $CAPTURE ]]; then
+      cp "$CAPTURE" "$STATE_DIR/forget.txt"
+      forget_capture >/dev/null 2>&1 9>&- &
+      disown
+    else
+      rm -f "$STATE_DIR/history.before"
+    fi
+  fi
+  write_session "$address" "$kind" "$editable"
+}
+
+compose() {
+  mkdir -p "$STATE_DIR"
+  rm -f "$RESULT"
+  : >"$CAPTURE"
+  write_session "" none
+}
+
+# --------------------------------------------------------------- overlay
+
+overlay_open() {
+  hyprctl layers -j 2>/dev/null | jq -e '[.. | objects | select(.namespace? == "ai-edit")] | length > 0' >/dev/null
+}
+
+# Pressing the keybinding again closes the overlay. It must not capture
+# first: the overlay holds the keyboard, so the copy would land in it.
+summon() {
+  local prepare="$1"
+  mkdir -p "$STATE_DIR"
+  # A second press while the first is still capturing is dropped.
+  take_lock -n || return 0
+  if overlay_open; then
+    omarchy-shell shell hide ai-edit >/dev/null
+    return
+  fi
+  "$prepare"
+  omarchy-shell shell summon ai-edit '{}' >/dev/null
+}
+
+# --------------------------------------------------------------- insert
+
+# The overlay starts insert detached and is gone by then, so a failure is
+# told with a notification, and the result is left on the clipboard to paste
+# by hand rather than lost.
+insert_failed() {
+  wl-copy --sensitive --type 'text/plain;charset=utf-8' <"$RESULT" 9>&-
+  notify-send -a "AI Edit" "AI Edit could not paste" "$1 The result is on the clipboard." 2>/dev/null 9>&-
+  die "$1"
+}
+
+insert() {
+  [[ -s $RESULT ]] || die "nothing to insert"
+  local address kind=wayland
+  address=$(jq -r '.address // ""' "$SESSION" 2>/dev/null)
+  [[ -n $address ]] || insert_failed "There is no window to paste into."
+  window_exists "$address" || insert_failed "The window the text came from is gone."
+  [[ $(jq -r '.xwayland' "$SESSION") == true ]] && kind=xwayland
+  [[ $(jq -r '.terminal' "$SESSION") == true ]] && kind=terminal
+
+  local paste=$RESULT
+  if [[ $kind == terminal ]]; then
+    # A trailing newline pasted into a shell runs the command line.
+    paste=$STATE_DIR/paste.txt
+    sed -z 's/\n*$//' "$RESULT" >"$paste"
+  fi
+
+  take_lock -w 3 || insert_failed "Another AI Edit action was still running."
+  save_clipboard
+  trap 'restore_clipboard; rm -f "$STATE_DIR/paste.txt"' EXIT
+  if ! wl-copy --sensitive --type 'text/plain;charset=utf-8' <"$paste" 9>&-; then
+    restore_clipboard
+    trap - EXIT
+    insert_failed "The clipboard could not be used."
+  fi
+  # The overlay holds the keyboard, and a window that is not focused may not
+  # read the clipboard.
+  focus_window "$address"
+  sleep 0.25
+  # Pasting into whatever has focus instead could put the text somewhere
+  # else entirely.
+  if [[ $(hyprctl activewindow -j 2>/dev/null | jq -r '.address // ""') != "$address" ]]; then
+    rm -f "$SAVED_TYPE" "$SAVED_DATA" "$STATE_DIR/paste.txt"
+    trap - EXIT
+    insert_failed "The window did not get the focus back."
+  fi
+  press paste "$kind"
+  # The paste is the app's own asynchronous read, with no event to wait for.
+  sleep 0.4
+  restore_clipboard
+  rm -f "$STATE_DIR/paste.txt"
+  trap - EXIT
+}
+
+# The overlay gets its rewrite from Service.qml; this stores the original and
+# the result where insert, copy and diff read them, and prints the diff.
+# {"original", "result"} on stdin.
+compare() {
+  mkdir -p "$STATE_DIR"
+  local input
+  input=$(mktemp "$STATE_DIR/compare.XXXXXX") || die "cannot write to $STATE_DIR"
+  cat >"$input"
+  jq -j '.original' "$input" >"$ORIGINAL" && jq -j '.result' "$input" >"$RESULT"
+  local status=$?
+  rm -f "$input"
+  ((status == 0)) || die "compare needs {original, result} on stdin"
+  word_diff
+}
+
+# The overlay can go back to an earlier step of a chain; this makes that
+# step's text the result that insert and copy use. Text on stdin.
+set_result() {
+  mkdir -p "$STATE_DIR"
+  cat >"$RESULT.new" && mv "$RESULT.new" "$RESULT"
+}
+
+copy() {
+  [[ -s $RESULT ]] || die "nothing to copy"
+  wl-copy --type 'text/plain;charset=utf-8' <"$RESULT"
+}
+
+# Settings and actions, from the plugin's config.toml and the user's.
+settings() {
+  local out
+  out=$("$PLUGIN_DIR/bin/ai-edit-config" 2>&1) || die "$out"
+  printf '%s\n' "$out"
+}
+
+config() {
+  settings | jq -c .config
+}
+
+actions() {
+  settings | jq -c .actions
+}
+
+# The action <id> names, from the settings JSON on stdin. An exact id comes
+# first: the overlay runs by id, and an id may equal another action's key.
+find_action() {
+  jq -c --arg id "$1" 'first((.actions[] | select(.id == $id)), (.actions[] | select(.key == $id))) // empty'
+}
+
+run() {
+  local id="" output=text action backend
+  while (($#)); do
+    case "$1" in
+      --insert) output=insert ;;
+      --diff) output=diff ;;
+      -*) [[ $1 == - ]] && id=- || die "unknown option $1" ;;
+      *) id=$1 ;;
+    esac
+    shift
+  done
+  [[ -n $id ]] || die "run needs an action id"
+  local all
+  all=$(settings) || exit 1
+  if [[ $id == - ]]; then
+    # A free prompt from the overlay. It comes through the environment, which
+    # only this user can read, rather than as an argument.
+    [[ -n ${AI_EDIT_INSTRUCTION:-} ]] || die "no instruction in AI_EDIT_INSTRUCTION"
+    action=$(jq -c '.config | {model, instruction: env.AI_EDIT_INSTRUCTION}' <<<"$all")
+  else
+    action=$(find_action "$id" <<<"$all")
+    [[ -n $action ]] || die "unknown action '$id'"
+  fi
+  backend=$(jq -r .config.backend <<<"$all")
+  [[ $backend == agent ]] || die "unknown backend '$backend'"
+
+  # The text travels in files and pipes only: as an argument it would show in
+  # /proc to every process on the machine, and bash puts a large here-string
+  # in /tmp.
+  mkdir -p "$STATE_DIR"
+  rm -f "$RESULT" "$DIFF"
+  if [[ -t 0 ]]; then
+    [[ -f $SESSION ]] || die "nothing captured"
+    jq -j '.text // ""' "$SESSION" >"$ORIGINAL"
+  else
+    cat >"$ORIGINAL"
+  fi
+
+  local reply
+  reply=$(mktemp "$STATE_DIR/reply.XXXXXX") || die "cannot write to $STATE_DIR"
+  jq -cRs --argjson action "$action" \
+    '{model: $action.model, instruction: $action.instruction, text: .}' <"$ORIGINAL" |
+    "$PLUGIN_DIR/bin/ai-edit-claude" >"$reply"
+
+  if ! jq -e 'has("text")' "$reply" >/dev/null 2>&1; then
+    local error
+    error=$(jq -r '.error // empty' "$reply" 2>/dev/null)
+    rm -f "$reply"
+    die "${error:-no answer}"
+  fi
+  jq -j '.text' "$reply" >"$RESULT"
+  rm -f "$reply"
+  case $output in
+    insert) insert ;;
+    diff) word_diff ;;
+    *) cat "$RESULT" ;;
+  esac
+}
+
+word_diff() {
+  [[ -f $ORIGINAL && -f $RESULT ]] || die "nothing to compare"
+  "$PLUGIN_DIR/bin/ai-edit-diff" "$ORIGINAL" "$RESULT" >"$DIFF" || die "diff failed"
+  cat "$DIFF"
+}
+
+# Everything the overlay needs when it opens, in one call.
+state() {
+  local all
+  all=$(settings) || exit 1
+  if [[ -f $SESSION ]]; then
+    jq -c --argjson all "$all" '$all + {session: .}' "$SESSION"
+  else
+    jq -cn --argjson all "$all" '$all + {session: {text: "", source: "compose", address: ""}}'
+  fi
+}
+
+# --------------------------------------------------------------- selftest
+
+check() {
+  local name="$1"
+  shift
+  if "$@"; then
+    echo "ok   $name"
+  else
+    echo "FAIL $name"
+    selftest_failures=$((selftest_failures + 1))
+  fi
+}
+
+selftest() {
+  selftest_failures=0
+  STATE_DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/ai-edit-selftest.XXXXXX") || die "no temporary directory"
+  SESSION=$STATE_DIR/session.json RESULT=$STATE_DIR/result.txt CAPTURE=$STATE_DIR/capture.txt
+  ORIGINAL=$STATE_DIR/original.txt DIFF=$STATE_DIR/diff.json
+  SAVED_TYPE=$STATE_DIR/clipboard.type SAVED_DATA=$STATE_DIR/clipboard.data
+  LOCK=$STATE_DIR/lock HISTORY=$STATE_DIR/history.json
+  trap 'rm -rf "$STATE_DIR"' EXIT
+
+  kind_of() { [[ $(window_kind <<<"$1") == "$2" ]]; }
+  check "terminal by tag" kind_of '{"address": "0x1", "xwayland": false, "tags": ["default-opacity*", "terminal*"]}' terminal
+  check "xwayland window" kind_of '{"address": "0x1", "xwayland": true, "tags": []}' xwayland
+  check "wayland window" kind_of '{"address": "0x1", "xwayland": false, "tags": ["terminals*"]}' wayland
+  check "no window" kind_of '{}' none
+  check "no hyprland" kind_of '' none
+
+  # A copy that reaches the clipboard a little late still counts, with one
+  # press, and an empty clipboard ends the wait instead of spinning.
+  late_copy() (
+    chords=""
+    press() { chords+="$1:$2 "; }
+    # Counted in a file: the call in a pipeline runs in a subshell.
+    wl-paste() {
+      [[ $1 == --list-types ]] && echo >>"$STATE_DIR/polls"
+      (($(wc -l <"$STATE_DIR/polls") >= 3)) || return 1
+      [[ $1 == --list-types ]] && printf 'text/plain;charset=utf-8\n' || printf 'landed'
+    }
+    : >"$STATE_DIR/polls"
+    copy_selection terminal && [[ $(<"$CAPTURE") == landed && $chords == "copy:terminal " ]]
+  )
+  check "copy waits for a late clipboard" late_copy
+  gives_up() (
+    COPY_WAIT_MS=100
+    press() { :; }
+    wl-paste() { return 1; }
+    ! copy_selection wayland
+  )
+  check "copy gives up" gives_up
+  image_only() (
+    COPY_WAIT_MS=100
+    press() { :; }
+    wl-paste() { [[ $1 == --list-types ]] && printf 'image/png\n' || printf 'PNG'; }
+    ! copy_selection wayland
+  )
+  check "an image is not a selection" image_only
+
+  session_kept() {
+    printf 'He said "no", then left.\nTwice.\n' >"$CAPTURE"
+    write_session 0xbeef xwayland
+    jq -j .text "$SESSION" | cmp -s - <(printf 'He said "no", then left.\nTwice.\n') &&
+      jq -e '.source == "selection" and .address == "0xbeef" and .xwayland and (.terminal | not)' "$SESSION" >/dev/null &&
+      [[ ! -e $CAPTURE ]]
+  }
+  check "session keeps the text exactly" session_kept
+  nothing_selected() {
+    : >"$CAPTURE"
+    write_session 0xbeef wayland
+    jq -e '.text == "" and .source == "compose" and .address == ""' "$SESSION" >/dev/null
+  }
+  check "nothing selected is compose" nothing_selected
+  input_focus() (
+    busctl() { printf 's "IC [a] program:x focus:0\\n IC [b] program:y focus:1\\n"\n'; }
+    [[ $(focused_input) == yes ]] || exit 1
+    busctl() { printf 's "IC [a] program:x focus:0\\n"\n'; }
+    [[ $(focused_input) == no ]] || exit 1
+    busctl() { return 1; }
+    [[ $(focused_input) == unknown ]]
+  )
+  check "a focused text field is detected through fcitx5" input_focus
+
+  # insert focuses the recorded window, pastes with the right chord and hands
+  # the clipboard back; a terminal gets no trailing newline.
+  terminal_paste() (
+    calls=""
+    hyprctl() {
+      case $1 in
+        clients) printf '[{"address": "0xbeef"}]' ;;
+        activewindow) printf '{"address": "0xbeef"}' ;;
+        *) calls+="$2 " ;;
+      esac
+    }
+    press() { calls+="press:$1:$2 "; pasted=$(<"$STATE_DIR/paste.txt"); }
+    wl-paste() { [[ $1 == --list-types ]] && printf 'text/plain;charset=utf-8\n' || printf 'old'; }
+    wl-copy() { cat >/dev/null; }
+    sleep() { :; }
+    jq -n '{text: "x", source: "selection", address: "0xbeef", xwayland: false, terminal: true}' >"$SESSION"
+    printf 'ls -la\n\n' >"$RESULT"
+    insert
+    [[ $pasted == "ls -la" && $calls == *"address:0xbeef"*"press:paste:terminal "* && ! -e $SAVED_DATA ]]
+  )
+  check "terminal paste drops the newline" terminal_paste
+  gone_window() (
+    hyprctl() { printf '[]'; }
+    jq -n '{text: "x", source: "selection", address: "0xbeef", xwayland: false, terminal: false}' >"$SESSION"
+    printf 'y' >"$RESULT"
+    ! (insert 2>/dev/null)
+  )
+  check "insert refuses a closed window" gone_window
+  focus_lost() (
+    hyprctl() {
+      case $1 in
+        clients) printf '[{"address": "0xbeef"}]' ;;
+        activewindow) printf '{"address": "0xother"}' ;;
+      esac
+    }
+    press() { echo pressed >>"$STATE_DIR/pressed"; }
+    wl-paste() { return 1; }
+    wl-copy() { [[ $1 == --clear ]] || cat >"$STATE_DIR/copied"; }
+    notify-send() { printf '%s|' "$@" >"$STATE_DIR/notified"; }
+    sleep() { :; }
+    jq -n '{text: "x", source: "selection", address: "0xbeef", xwayland: false, terminal: false}' >"$SESSION"
+    printf 'the result' >"$RESULT"
+    rm -f "$STATE_DIR/pressed"
+    ! (insert 2>/dev/null) && [[ ! -e $STATE_DIR/pressed && $(<"$STATE_DIR/copied") == "the result" ]] &&
+      [[ $(<"$STATE_DIR/notified") == "-a|AI Edit|AI Edit could not paste|"* ]]
+  )
+  check "insert does not paste into another window" focus_lost
+
+  # The history entry capture caused goes; one the user copied before stays.
+  history_cleanup() (
+    sleep() { :; }
+    printf '[{"type": "text", "text": "old"}]' >"$STATE_DIR/history.before"
+    printf '[{"type": "text", "text": "secret\\n"}, {"type": "text", "text": "old"}]' >"$HISTORY"
+    printf 'secret\n' >"$STATE_DIR/forget.txt"
+    forget_capture
+    jq -e '. == [{"type": "text", "text": "old"}]' "$HISTORY" >/dev/null || exit 1
+    printf '[{"type": "text", "text": "old"}]' >"$STATE_DIR/history.before"
+    printf '[{"type": "text", "text": "old"}]' >"$HISTORY"
+    printf 'old' >"$STATE_DIR/forget.txt"
+    forget_capture
+    jq -e '. == [{"type": "text", "text": "old"}]' "$HISTORY" >/dev/null
+  )
+  check "capture leaves no trace in the clipboard history" history_cleanup
+
+  configured() (
+    export XDG_CONFIG_HOME=$STATE_DIR/xdg
+    mkdir -p "$XDG_CONFIG_HOME/ai-edit"
+    cat >"$XDG_CONFIG_HOME/ai-edit/config.toml" <<'TOML'
+model = "haiku"
+preview = false
+
+[[action]]
+key = "a"
+label = "Make it Shorter"
+instruction = """
+x"""
+
+[[action]]
+key = "b"
+label = "B"
+instruction = "y"
+model = "opus"
+preview = true
+TOML
+    actions | jq -e 'map({id, key, instruction, model, preview}) == [
+      {"id": "make-it-shorter", "key": "a", "instruction": "x", "model": "haiku", "preview": false},
+      {"id": "b", "key": "b", "instruction": "y", "model": "opus", "preview": true}]' >/dev/null &&
+      config | jq -e '.backend == "agent" and .width == 560 and .model == "haiku"' >/dev/null
+  )
+  check "your config overrides settings and replaces actions" configured
+  broken_config() (
+    export XDG_CONFIG_HOME=$STATE_DIR/broken
+    mkdir -p "$XDG_CONFIG_HOME/ai-edit"
+    printf 'model = \n' >"$XDG_CONFIG_HOME/ai-edit/config.toml"
+    ! (actions >/dev/null 2>&1) || exit 1
+    printf '[[action]]\nkey = "a"\nlabel = "A"\ninstruction = "x"\n[[action]]\nkey = "a"\nlabel = "B"\ninstruction = "y"\n' \
+      >"$XDG_CONFIG_HOME/ai-edit/config.toml"
+    [[ $(actions 2>&1) == *"used twice"* ]]
+  )
+  check "a broken config is an error that says why" broken_config
+  action_ids() (
+    export XDG_CONFIG_HOME=$STATE_DIR/ids
+    mkdir -p "$XDG_CONFIG_HOME/ai-edit"
+    cat >"$XDG_CONFIG_HOME/ai-edit/config.toml" <<'TOML'
+[[action]]
+key = "x"
+label = "English"
+instruction = "first"
+[[action]]
+key = "s"
+label = "X"
+instruction = "second"
+[[action]]
+key = "g"
+label = "English!"
+instruction = "third"
+[[action]]
+key = "j"
+label = "日本語"
+instruction = "fourth"
+TOML
+    actions | jq -e '[.[].id] == ["english", "x", "english-g", "j"]' >/dev/null &&
+      [[ $(settings | find_action x | jq -r .instruction) == second ]] &&
+      [[ $(settings | find_action j | jq -r .instruction) == fourth ]]
+  )
+  check "action ids are unique and an id beats a key" action_ids
+
+  shipped_actions() (
+    export XDG_CONFIG_HOME=$STATE_DIR/empty
+    actions | jq -e 'length > 0 and all(.[]; (.id | length > 0) and (.label | length > 0))' >/dev/null
+  )
+  check "the shipped actions load" shipped_actions
+
+  ((selftest_failures == 0)) || die "selftest: $selftest_failures failed"
+  echo "ai-edit selftest: ok"
+}
+
+command="${1:-}"
+shift || true
+case "$command" in
+  open) summon capture ;;
+  compose) summon compose ;;
+  capture) capture ;;
+  run) run "$@" ;;
+  actions) actions ;;
+  diff) word_diff ;;
+  state) state ;;
+  insert) insert ;;
+  copy) copy ;;
+  set-result) set_result ;;
+  compare) compare ;;
+  selftest) selftest ;;
+  -h | --help | help) usage ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

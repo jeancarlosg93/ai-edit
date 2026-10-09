@@ -1,0 +1,45 @@
+# AI Edit settings and actions. This is the shipped default; to change it,
+# copy it to ~/.config/ai-edit/config.toml and edit the copy. Settings you
+# leave out keep these values. Actions you list replace these as a whole.
+
+# Claude model for actions that do not name one: sonnet, haiku or opus.
+model = "sonnet"
+# Show the result before pasting it; Shift with the letter does the opposite.
+preview = true
+# Show only the text; the letters keep working and ? shows the actions.
+compact = false
+# Width of the overlay.
+width = 560
+
+# An action needs a key (one lowercase letter), a label and an instruction.
+# Optional: model, preview, and diff = false to show the result as plain text
+# instead of what changed (right for translations). Write the instruction as
+# you would to a careful editor: what to change, and what to leave alone.
+# Rules that apply to every action (keep the language, no preamble, no em
+# dashes) are already given.
+
+[[action]]
+key = "f"
+label = "Fix"
+instruction = """
+Correct spelling, grammar and punctuation only. Keep the author's wording, \
+tone, sentence structure and length exactly as they are: add nothing, \
+remove nothing, smooth nothing. Keep the language of the text."""
+
+[[action]]
+key = "i"
+label = "Improve"
+instruction = """
+Improve this text where it is muddled: untangle sentences, put the points \
+in a logical order and remove repetition. Keep the author's voice, wording \
+and tone. Add nothing, do not flatten it into a corporate tone, and avoid \
+typical AI phrasing. Keep the language of the text."""
+
+[[action]]
+key = "e"
+label = "English"
+diff = false
+instruction = """
+Translate the text into English, matching the register of the original. \
+Correct spelling and grammar on the way. If the text is already English, \
+only correct its spelling and grammar."""

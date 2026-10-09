@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "ai-edit",
+  "name": "AI Edit",
+  "version": "0.1.0",
+  "author": "Paul Middelkoop",
+  "description": "Rewrite the selected text with a keystroke and see the difference before it is pasted back",
+  "kinds": [
+    "overlay",
+    "service"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "AiEdit.qml",
+    "service": "Service.qml"
+  },
+  "license": "MIT"
+}

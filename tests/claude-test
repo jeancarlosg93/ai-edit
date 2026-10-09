@@ -1,0 +1,45 @@
+#!/bin/bash
+# Runs bin/ai-edit-claude against tests/fake-claude: answers and failures.
+set -uo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+export XDG_RUNTIME_DIR=$tmp/run XDG_STATE_HOME=$tmp/state XDG_CONFIG_HOME=$tmp/config
+export AI_EDIT_CLAUDE=$root/tests/fake-claude AI_EDIT_TURN_TIMEOUT=2
+failures=0
+
+ask() {
+  jq -cn --arg instruction "$1" --arg text "$2" '{instruction: $instruction, text: $text}' |
+    "$root/bin/ai-edit-claude"
+}
+
+expect() {
+  local name="$1" want="$2" got="$3"
+  if [[ $got == "$want" ]]; then
+    echo "ok   $name"
+  else
+    echo "FAIL $name: wanted $want, got $got"
+    failures=$((failures + 1))
+  fi
+}
+
+expect "answer" '{"text": "HELLO"}' "$(ask echo hello)"
+expect "padding kept" '{"text": "\n  HELLO WORLD\n"}' "$(ask echo $'\n  hello world\n')"
+expect "chatter stripped" '{"text": "HI"}' "$(ask chatter hi)"
+expect "empty text" '{"error": "nothing to rewrite"}' "$(ask echo '  ')"
+expect "empty answer" '{"error": "claude returned nothing"}' "$(ask empty hi)"
+expect "error result" '{"error": "Claude AI usage limit reached"}' "$(ask fail hi)"
+expect "dead process" '{"error": "Error: fake claude gave up"}' "$(ask die hi)"
+expect "timeout" '{"error": "claude did not answer within 2 s"}' "$(ask hang hi)"
+# More text than a pipe holds, to a claude that never reads it.
+started=$SECONDS
+got=$(python3 -c 'import json; print(json.dumps({"instruction": "echo", "text": "word " * 600000}))' |
+  FAKE_CLAUDE_DEAF=1 "$root/bin/ai-edit-claude")
+expect "timeout covers a blocked write" '{"error": "claude did not answer within 2 s"}' "$got"
+expect "blocked write ends in time" yes "$( ((SECONDS - started <= 5)) && echo yes || echo no)"
+expect "bad request" '{"error": "request is not JSON"}' "$(echo nope | "$root/bin/ai-edit-claude")"
+sleep 0.5
+expect "no stray processes" 0 "$(pgrep -fc "$AI_EDIT_CLAUDE")"
+
+((failures == 0)) || exit 1

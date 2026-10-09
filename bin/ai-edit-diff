@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""ai-edit-diff ORIGINAL RESULT: word-level diff as JSON segments on stdout.
+
+Each segment is {"op": "equal" | "del" | "ins", "text": ...}; joining the
+equal and del segments gives the original, the equal and ins ones the result.
+"""
+
+import difflib
+import json
+import re
+import sys
+
+TOKEN = re.compile(r"\s+|\w+|[^\w\s]")
+# Above this many token pairs a word diff can take seconds on repetitive
+# text; such a block is compared line by line, or shown as replaced.
+MAX_PAIRS = 1_000_000
+
+
+def word_ops(original, result):
+    a, b = TOKEN.findall(original), TOKEN.findall(result)
+    raw = []
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            raw.append(["equal", "".join(a[i1:i2])])
+            continue
+        if i2 > i1:
+            raw.append(["del", "".join(a[i1:i2])])
+        if j2 > j1:
+            raw.append(["ins", "".join(b[j1:j2])])
+
+    # A lone space kept between two changes splits one rewritten phrase into
+    # alternating red and green words; it reads better as part of the change.
+    for i in range(1, len(raw) - 1):
+        if raw[i][0] == "equal" and raw[i][1].isspace() and "\n" not in raw[i][1] \
+                and raw[i - 1][0] != "equal" and raw[i + 1][0] != "equal":
+            raw[i] = ["both", raw[i][1]]
+    return raw
+
+
+def block_ops(original, result):
+    pairs = len(TOKEN.findall(original)) * len(TOKEN.findall(result))
+    if pairs <= MAX_PAIRS:
+        return word_ops(original, result)
+    a, b = original.splitlines(keepends=True), result.splitlines(keepends=True)
+    if len(a) == len(b) and len(a) > 1:
+        return [op for x, y in zip(a, b) for op in block_ops(x, y)]
+    return [["del", original], ["ins", result]]
+
+
+def segments(original, result):
+    a = original.splitlines(keepends=True)
+    b = result.splitlines(keepends=True)
+    raw = []
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            raw.append(["equal", "".join(a[i1:i2])])
+        else:
+            raw.extend(block_ops("".join(a[i1:i2]), "".join(b[j1:j2])))
+
+    out = []
+    run_del, run_ins = [], []
+
+    def flush():
+        if run_del:
+            out.append({"op": "del", "text": "".join(run_del)})
+        if run_ins:
+            out.append({"op": "ins", "text": "".join(run_ins)})
+        run_del.clear()
+        run_ins.clear()
+
+    for op, text in raw:
+        if not text:
+            continue
+        if op == "equal":
+            flush()
+            if out and out[-1]["op"] == "equal":
+                out[-1]["text"] += text
+            else:
+                out.append({"op": "equal", "text": text})
+        else:
+            if op in ("del", "both"):
+                run_del.append(text)
+            if op in ("ins", "both"):
+                run_ins.append(text)
+    flush()
+    return out
+
+
+def main():
+    if len(sys.argv) != 3:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as f:
+        original = f.read()
+    with open(sys.argv[2], encoding="utf-8", errors="replace") as f:
+        result = f.read()
+    json.dump(segments(original, result), sys.stdout, ensure_ascii=False)
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

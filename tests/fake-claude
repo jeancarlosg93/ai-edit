@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Stands in for claude in stream-json mode; the instruction picks the behaviour."""
+import json
+import os
+import sys
+import time
+
+if os.environ.get("FAKE_CLAUDE_DEAF"):
+    time.sleep(3600)
+
+for line in sys.stdin:
+    content = json.loads(line)["message"]["content"][0]["text"]
+    instruction, _, rest = content.partition("\n\n")
+    text = rest.removeprefix("<text>\n").removesuffix("\n</text>")
+    if instruction == "die":
+        print("Error: fake claude gave up", file=sys.stderr, flush=True)
+        sys.exit(3)
+    if instruction == "hang":
+        time.sleep(3600)
+    result = {"type": "result", "subtype": "success", "is_error": False, "duration_api_ms": 5}
+    if instruction == "fail":
+        result.update(is_error=True, result="Claude AI usage limit reached")
+    elif instruction == "empty":
+        result["result"] = "<rewrite></rewrite>"
+    elif instruction == "chatter":
+        result["result"] = f"Sure, wrapped in <rewrite> tags:\n<rewrite>\n{text.upper()}\n</rewrite>"
+    else:
+        result["result"] = f"<rewrite>{text.upper()}</rewrite>"
+    print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
+    print(json.dumps(result), flush=True)

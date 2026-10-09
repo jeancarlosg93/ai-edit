@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""ai-edit-config: the settings and actions as JSON on stdout.
+
+The plugin's config.toml holds the defaults; ~/.config/ai-edit/config.toml
+overrides settings key by key, and its actions, when it has any, replace the
+default ones as a whole. Prints {"config": {...}, "actions": [...]} with every
+action's model and preview resolved, or an error on stderr.
+"""
+
+import json
+import os
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+PLUGIN_DIR = Path(__file__).resolve().parent.parent
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "ai-edit"
+SETTINGS = ("model", "preview", "compact", "width", "backend")
+
+
+class ConfigError(Exception):
+    pass
+
+
+def load(path):
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        return {}
+    except tomllib.TOMLDecodeError as error:
+        raise ConfigError(f"{path}: {error}")
+
+
+def action_id(label):
+    return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+
+
+def resolve(defaults, user):
+    config = {key: defaults[key] for key in SETTINGS if key in defaults}
+    config.setdefault("backend", "agent")
+    config.update({key: user[key] for key in SETTINGS if key in user})
+
+    path = CONFIG_DIR / "config.toml" if "action" in user else PLUGIN_DIR / "config.toml"
+    actions, keys, ids = [], set(), set()
+    for number, action in enumerate(user.get("action", defaults.get("action", [])), 1):
+        where = f"{path}: action {number}"
+        if not isinstance(action, dict):
+            raise ConfigError(f"{where} is not a table")
+        for field in ("key", "label", "instruction"):
+            if not isinstance(action.get(field), str) or not action[field].strip():
+                raise ConfigError(f"{where} has no {field}")
+        if not re.fullmatch(r"[a-z]", action["key"]):
+            raise ConfigError(f"{where}: key must be one lowercase letter")
+        if action["key"] in keys:
+            raise ConfigError(f"{where}: key {action['key']} is used twice")
+        keys.add(action["key"])
+        resolved = dict(action)
+        # The overlay runs an action by its id, so ids must be unique and not
+        # empty. A derived one that is not falls back on the key.
+        if action.get("id"):
+            if action["id"] in ids:
+                raise ConfigError(f"{where}: id {action['id']} is used twice")
+            resolved["id"] = action["id"]
+        else:
+            derived = action_id(action["label"]) or action["key"]
+            resolved["id"] = derived if derived not in ids else f"{derived}-{action['key']}"
+        ids.add(resolved["id"])
+        resolved["instruction"] = action["instruction"].strip()
+        resolved.setdefault("model", config.get("model", "sonnet"))
+        resolved.setdefault("preview", config.get("preview", True))
+        actions.append(resolved)
+    return {"config": config, "actions": actions}
+
+
+def main():
+    try:
+        result = resolve(load(PLUGIN_DIR / "config.toml"), load(CONFIG_DIR / "config.toml"))
+    except ConfigError as error:
+        print(error, file=sys.stderr)
+        return 1
+    json.dump(result, sys.stdout, ensure_ascii=False)
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
