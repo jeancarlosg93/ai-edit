@@ -46,11 +46,13 @@ as long as it runs `ai-edit open`.
 **Try it:** select a sentence in a text field, press **Super+E**, then **f**
 to fix it. Review the changes and press **Enter**.
 
-To remove it again, delete that line from `bindings.lua` and run:
+### Remove
+
+Delete the shortcut line from `bindings.lua` and run:
 
 ```bash
 omarchy plugin remove ai-edit
-rm -rf ~/.config/ai-edit ~/.local/state/ai-edit   # your config, if you made one
+rm -rf ~/.config/ai-edit ~/.local/state/ai-edit   # your config and Claude's working folder
 ```
 
 ## Choose an action
