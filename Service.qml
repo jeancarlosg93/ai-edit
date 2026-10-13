@@ -13,10 +13,11 @@ Item {
 
   property var shell: null
 
-  readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, "")
+  readonly property string pluginDir: decodeURIComponent(String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, ""))
   readonly property string workDir: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/ai-edit/agent"
   readonly property int turnTimeout: 60000
   readonly property int maxAge: 3600000
+  readonly property int maxText: 4 * 1024 * 1024
 
   property string systemPrompt: ""
   // Set while the shell tears the service down: creating a process then
@@ -36,6 +37,11 @@ Item {
     var core = text.trim()
     if (!core) {
       fail("Nothing to rewrite")
+      return
+    }
+    // As bin/ai-edit-claude: claude reads the request as one line.
+    if (text.length > root.maxText) {
+      fail("The text is too large")
       return
     }
     if (!root.systemPrompt) {
@@ -69,6 +75,12 @@ Item {
     for (var i = 0; i < list.length; i++)
       if (list[i] && unique.indexOf(list[i]) === -1) unique.push(list[i])
     root.models = unique
+    var next = {}
+    for (var model in root.idle) {
+      if (unique.indexOf(model) >= 0) next[model] = root.idle[model]
+      else if (root.idle[model]) root.idle[model].retire()
+    }
+    root.idle = next
     for (var j = 0; j < unique.length; j++) root.warm(unique[j])
   }
 

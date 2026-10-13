@@ -6,15 +6,15 @@ import qs.Commons
 import qs.Ui
 import "components"
 
-// Draws only: every action is a call into bin/ai-edit.
+// Draws only: rewrites go through Service.qml, everything else is a call into
+// bin/ai-edit.
 Item {
   id: root
 
-  property string omarchyPath: Quickshell.env("OMARCHY_PATH")
   property var shell: null
   property var manifest: null
 
-  readonly property string aiEditBin: String(Qt.resolvedUrl("bin/ai-edit")).replace(/^file:\/\//, "")
+  readonly property string aiEditBin: decodeURIComponent(String(Qt.resolvedUrl("bin/ai-edit")).replace(/^file:\/\//, ""))
 
   property bool opened: false
   // pick, busy, diff or error
@@ -42,7 +42,7 @@ Item {
   // The results before the one shown, so Backspace goes back a step.
   property var history: []
   property string shownLabel: ""
-  // After a result the actions are hidden; Tab brings them back for a next
+  // After a result the actions are hidden; ? brings them back for a next
   // step on that result.
   property bool showNext: false
   // The selection bar in the action list. On a result it stays off until an
@@ -241,7 +241,7 @@ Item {
       return
     }
     if (root.pasteWhenDone) {
-      root.accept()
+      root.deliver(root.copyOnly ? "copy" : "insert", false)
       return
     }
     var segments
@@ -263,14 +263,24 @@ Item {
   }
 
   function accept() {
-    var command = root.copyOnly ? "copy" : "insert"
-    root.dismiss()
-    Quickshell.execDetached([root.aiEditBin, command])
+    root.deliver(root.copyOnly ? "copy" : "insert", true)
   }
 
   function copyResult() {
+    root.deliver("copy", true)
+  }
+
+  // The text shown goes along on stdin: after going back a step it is not
+  // the last result, which is all result.txt holds.
+  function deliver(command, shown) {
     root.dismiss()
-    Quickshell.execDetached([root.aiEditBin, "copy"])
+    if (!shown) {
+      Quickshell.execDetached([root.aiEditBin, command])
+      return
+    }
+    deliverProc.input = root.resultText
+    deliverProc.command = [root.aiEditBin, command, "-"]
+    deliverProc.running = true
   }
 
   function fail(message) {
@@ -312,9 +322,6 @@ Item {
     root.cursorActive = false
     textScroll.contentY = 0
     keyCatcher.forceActiveFocus()
-    // Enter pastes what is shown, and a failed run removed result.txt.
-    setResultProc.input = root.resultText
-    setResultProc.running = true
   }
 
   function backToPick() {
@@ -460,9 +467,8 @@ Item {
   }
 
   Process {
-    id: setResultProc
+    id: deliverProc
     property string input: ""
-    command: [root.aiEditBin, "set-result"]
     stdinEnabled: true
     onStarted: {
       write(input)

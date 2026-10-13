@@ -2,6 +2,7 @@
 """Stands in for claude in stream-json mode; the instruction picks the behaviour."""
 import json
 import os
+import signal
 import sys
 import time
 
@@ -17,6 +18,9 @@ for line in sys.stdin:
         sys.exit(3)
     if instruction == "hang":
         time.sleep(3600)
+    if instruction == "linger":
+        os.close(1)
+        time.sleep(3600)
     result = {"type": "result", "subtype": "success", "is_error": False, "duration_api_ms": 5}
     if instruction == "fail":
         result.update(is_error=True, result="Claude AI usage limit reached")
@@ -28,3 +32,7 @@ for line in sys.stdin:
         result["result"] = f"<rewrite>{text.upper()}</rewrite>"
     print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
     print(json.dumps(result), flush=True)
+    if instruction == "stubborn":
+        # Answers, then ignores the end of its input.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        time.sleep(3600)

@@ -37,38 +37,70 @@ def action_id(label):
     return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
 
 
+def is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_text(value):
+    return isinstance(value, str) and value.strip() != ""
+
+
+CHECKS = {
+    "model": (is_text, "a model name such as \"sonnet\""),
+    "preview": (lambda v: isinstance(v, bool), "true or false"),
+    "compact": (lambda v: isinstance(v, bool), "true or false"),
+    "width": (lambda v: is_int(v) and v >= 200, "a whole number of pixels, 200 or more"),
+    "backend": (is_text, "a backend name"),
+    "idle_timeout": (lambda v: is_int(v) and v >= 0, "a whole number of minutes, 0 or more"),
+}
+ACTION_CHECKS = {key: CHECKS[key] for key in ("model", "preview")}
+ACTION_CHECKS["diff"] = (lambda v: isinstance(v, bool), "true or false")
+ACTION_CHECKS["id"] = (is_text, "a name")
+
+
+def check(where, settings, checks):
+    for key, (valid, wanted) in checks.items():
+        if key in settings and not valid(settings[key]):
+            raise ConfigError(f"{where}: {key} must be {wanted}")
+
+
 def resolve(defaults, user):
+    check(CONFIG_DIR / "config.toml", user, CHECKS)
     config = {key: defaults[key] for key in SETTINGS if key in defaults}
     config.setdefault("backend", "agent")
     config.update({key: user[key] for key in SETTINGS if key in user})
-    idle = config.get("idle_timeout", 30)
-    if isinstance(idle, bool) or not isinstance(idle, int) or idle < 0:
-        raise ConfigError(f"{CONFIG_DIR / 'config.toml'}: idle_timeout must be a whole number of minutes, 0 or more")
 
     path = CONFIG_DIR / "config.toml" if "action" in user else PLUGIN_DIR / "config.toml"
+    listed = user.get("action", defaults.get("action", []))
+    if not isinstance(listed, list):
+        raise ConfigError(f"{path}: write each action as [[action]]")
     actions, keys, ids = [], set(), set()
-    for number, action in enumerate(user.get("action", defaults.get("action", [])), 1):
+    for number, action in enumerate(listed, 1):
         where = f"{path}: action {number}"
         if not isinstance(action, dict):
             raise ConfigError(f"{where} is not a table")
         for field in ("key", "label", "instruction"):
-            if not isinstance(action.get(field), str) or not action[field].strip():
+            if not is_text(action.get(field)):
                 raise ConfigError(f"{where} has no {field}")
+        check(where, action, ACTION_CHECKS)
         if not re.fullmatch(r"[a-z]", action["key"]):
             raise ConfigError(f"{where}: key must be one lowercase letter")
+        if action["key"] == "y":
+            raise ConfigError(f"{where}: key y is taken: it copies a result")
         if action["key"] in keys:
             raise ConfigError(f"{where}: key {action['key']} is used twice")
         keys.add(action["key"])
         resolved = dict(action)
         # The overlay runs an action by its id, so ids must be unique and not
-        # empty. A derived one that is not falls back on the key.
-        if action.get("id"):
+        # empty. A derived one that is taken gets the key, then a number.
+        if "id" in action:
             if action["id"] in ids:
                 raise ConfigError(f"{where}: id {action['id']} is used twice")
             resolved["id"] = action["id"]
         else:
-            derived = action_id(action["label"]) or action["key"]
-            resolved["id"] = derived if derived not in ids else f"{derived}-{action['key']}"
+            base = action_id(action["label"]) or action["key"]
+            candidates = [base, f"{base}-{action['key']}"] + [f"{base}-{action['key']}-{n}" for n in range(2, 100)]
+            resolved["id"] = next(c for c in candidates if c not in ids)
         ids.add(resolved["id"])
         resolved["instruction"] = action["instruction"].strip()
         resolved.setdefault("model", config.get("model", "sonnet"))

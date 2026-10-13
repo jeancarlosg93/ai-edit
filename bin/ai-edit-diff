@@ -48,9 +48,18 @@ def block_ops(original, result):
     return [["del", original], ["ins", result]]
 
 
-def segments(original, result):
-    a = original.splitlines(keepends=True)
-    b = result.splitlines(keepends=True)
+def line_ops(a, b):
+    if len(a) * len(b) > MAX_PAIRS:
+        # Too many lines to align quickly: keep the unchanged start and end
+        # and compare what lies between as one block.
+        start = 0
+        while start < min(len(a), len(b)) and a[start] == b[start]:
+            start += 1
+        end = 0
+        while end < min(len(a), len(b)) - start and a[-1 - end] == b[-1 - end]:
+            end += 1
+        middle = block_ops("".join(a[start:len(a) - end]), "".join(b[start:len(b) - end]))
+        return [["equal", "".join(a[:start])]] + middle + [["equal", "".join(a[len(a) - end:])]]
     raw = []
     matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -58,6 +67,11 @@ def segments(original, result):
             raw.append(["equal", "".join(a[i1:i2])])
         else:
             raw.extend(block_ops("".join(a[i1:i2]), "".join(b[j1:j2])))
+    return raw
+
+
+def segments(original, result):
+    raw = line_ops(original.splitlines(keepends=True), result.splitlines(keepends=True))
 
     out = []
     run_del, run_ins = [], []

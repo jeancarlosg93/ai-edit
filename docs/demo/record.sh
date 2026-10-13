@@ -63,8 +63,9 @@ W=$(hyprctl clients -j | jq -r '[.[] | select(.title | test("^(New Message|Compo
 [[ -n $W ]] || abort "no single Gmail compose pop-out (title starting with New Message)"
 back=$(hyprctl activewindow -j | jq -r .address)
 THEME_BACK=$(omarchy theme current | tr '[:upper:] ' '[:lower:]-')
+SAVE=$(mktemp -d "$XDG_RUNTIME_DIR/ai-edit-demo.XXXXXX") || abort "no private directory"
 types=$(wl-paste -l 2>/dev/null); t=$(head -1 <<<"$types")
-[[ -n $t ]] && wl-paste -n -t "$t" >"$ST/d0"
+if [[ -n $t ]] && ! wl-paste -n -t "$t" >"$SAVE/clipboard"; then rm -rf "$SAVE"; abort "the clipboard could not be saved"; fi
 sensitive=""; grep -qx 'x-kde-passwordManagerHint' <<<"$types" && sensitive=--sensitive
 DND_BACK=$(omarchy-shell notifications dndState)
 read -r FLOAT_BACK AT_BACK SIZE_BACK < <(hyprctl clients -j |
@@ -86,18 +87,19 @@ restore() {
     hyprctl dispatch "hl.dsp.window.resize({ x = ${SIZE_BACK%,*}, y = ${SIZE_BACK#*,} })" >/dev/null
     hyprctl dispatch "hl.dsp.window.move({ x = ${AT_BACK%,*}, y = ${AT_BACK#*,} })" >/dev/null
   fi
-  [[ -e $USER_CONFIG.demo ]] && mv "$USER_CONFIG.demo" "$USER_CONFIG"
+  [[ -e $SAVE/config.toml || -L $SAVE/config.toml ]] && mv "$SAVE/config.toml" "$USER_CONFIG"
   omarchy-shell notifications setDnd "$DND_BACK" >/dev/null
   omarchy theme set "$THEME_BACK" >/dev/null 2>&1
   hyprctl dispatch "hl.dsp.focus({ window = 'address:$back' })" >/dev/null
-  [[ -s $ST/d0 ]] && wl-copy -t "$t" $sensitive <"$ST/d0" >/dev/null 2>&1; rm -f "$ST/d0"
+  if [[ -n $t ]]; then wl-copy -t "$t" $sensitive <"$SAVE/clipboard" >/dev/null 2>&1; else wl-copy --clear; fi
+  rm -rf "$SAVE"
 }
 trap restore EXIT
 trap 'exit 1' INT TERM
 rm -f "$OUT/marks.wall" "$OUT/marks" "$OUT/raw.mp4"
 
 # The shipped actions, not the user's own; moved back by restore.
-[[ -e $USER_CONFIG || -L $USER_CONFIG ]] && mv "$USER_CONFIG" "$USER_CONFIG.demo"
+[[ -e $USER_CONFIG || -L $USER_CONFIG ]] && mv "$USER_CONFIG" "$SAVE/config.toml"
 [[ $("$S" actions | jq -r 'map(.key) | join("")') == fise ]] || abort "the shipped actions did not load"
 # Tokyo Night is Omarchy's default theme, so the overlay looks as it does out of the box.
 omarchy theme set tokyo-night >/dev/null 2>&1; pause 6

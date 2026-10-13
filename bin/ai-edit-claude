@@ -140,7 +140,12 @@ class Worker:
                 except queue.Empty:
                     continue
                 if event is None:
-                    self.proc.wait()
+                    # stdout closed; a claude that stays alive after that is
+                    # still bound by the deadline.
+                    try:
+                        self.proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        raise TurnError(f"claude did not answer within {TURN_TIMEOUT} s")
                     raise TurnError(self.failure(f"claude exited with status {self.proc.returncode}"))
                 if event["type"] == "write_failed":
                     raise TurnError(self.failure("claude exited before the request"))
@@ -152,7 +157,6 @@ class Worker:
                 answer = extract_answer(result)
                 if not answer.strip():
                     raise TurnError("claude returned nothing")
-                self.stop_later()
                 return answer
         except BaseException:
             self.kill()
@@ -167,9 +171,6 @@ class Worker:
             self.proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.kill()
-
-    def stop_later(self):
-        threading.Thread(target=self.stop, daemon=True).start()
 
     def kill(self):
         if self.proc.poll() is None:
@@ -203,15 +204,21 @@ def parse_request(raw):
 
 def main():
     raw = sys.stdin.buffer.read(MAX_REQUEST + 1)
+    worker = None
     if len(raw) > MAX_REQUEST:
         reply = {"error": "text is too large"}
     else:
         try:
             request = parse_request(raw)
-            reply = {"text": rewrite(Worker(request["model"]), request)}
+            worker = Worker(request["model"])
+            reply = {"text": rewrite(worker, request)}
         except (TurnError, OSError) as error:
             reply = {"error": str(error)}
-    print(json.dumps(reply))
+    print(json.dumps(reply), flush=True)
+    # The answer is out; claude is ended before exiting, or it would be left
+    # running on its own.
+    if worker:
+        worker.stop()
     return 0 if "text" in reply else 1
 
 

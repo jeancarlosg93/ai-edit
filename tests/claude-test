@@ -32,6 +32,8 @@ expect "empty answer" '{"error": "claude returned nothing"}' "$(ask empty hi)"
 expect "error result" '{"error": "Claude AI usage limit reached"}' "$(ask fail hi)"
 expect "dead process" '{"error": "Error: fake claude gave up"}' "$(ask die hi)"
 expect "timeout" '{"error": "claude did not answer within 2 s"}' "$(ask hang hi)"
+expect "closed output still times out" '{"error": "claude did not answer within 2 s"}' "$(ask linger hi)"
+expect "answer from a claude that keeps running" '{"text": "HI"}' "$(ask stubborn hi)"
 # More text than a pipe holds, to a claude that never reads it.
 started=$SECONDS
 got=$(python3 -c 'import json; print(json.dumps({"instruction": "echo", "text": "word " * 600000}))' |
