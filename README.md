@@ -40,8 +40,18 @@ Add this shortcut to `~/.config/hypr/bindings.lua`:
 o.bind("SUPER + E", "Edit text with AI", os.getenv("HOME") .. "/.config/omarchy/plugins/ai-edit/bin/ai-edit open")
 ```
 
+Super+E is free in a default Omarchy setup; any other key works just as well,
+as long as it runs `ai-edit open`.
+
 **Try it:** select a sentence in a text field, press **Super+E**, then **f**
 to fix it. Review the changes and press **Enter**.
+
+To remove it again, delete that line from `bindings.lua` and run:
+
+```bash
+omarchy plugin remove ai-edit
+rm -rf ~/.config/ai-edit ~/.local/state/ai-edit   # your config, if you made one
+```
 
 ## Choose an action
 
@@ -100,8 +110,20 @@ mkdir -p ~/.config/ai-edit
 cp ~/.config/omarchy/plugins/ai-edit/config.toml ~/.config/ai-edit/config.toml
 ```
 
-Edit `~/.config/ai-edit/config.toml` to change the model, hide the key hints
-with `compact = true`, or add your own actions. For example, append:
+Settings you leave out keep their defaults. Changes apply the next time you
+open AI Edit.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `model` | `"sonnet"` | Claude model for actions that don't name one: `sonnet`, `haiku` or `opus`. |
+| `preview` | `true` | Show the result before pasting it. Shift with the letter does the opposite. |
+| `compact` | `false` | Hide the action list and key hints; the letters keep working and **?** shows them. |
+| `width` | `560` | Width of the overlay. |
+| `idle_timeout` | `30` | Minutes without a rewrite before the waiting Claude process stops to free its memory (about 170 MB per model). The next rewrite then takes a few seconds longer. `0` keeps Claude ready all the time. |
+
+### Your own actions
+
+Each `[[action]]` table adds a letter to the list. For example:
 
 ```toml
 [[action]]
@@ -110,35 +132,18 @@ label = "Warmer"
 instruction = "Make the tone a little warmer and friendlier. Keep the meaning and the length."
 ```
 
-Now **w** warms up your selection. Each action needs a unique lowercase key,
-a label and an instruction. Keep **c** free if you want custom instructions.
+Now **w** warms up your selection. If you define actions, your list replaces
+the shipped one as a whole, so keep the ones you want from the copied config.
 
-Settings you leave out keep their defaults. If you define actions, your list
-replaces the shipped list. Changes apply the next time you open AI Edit.
-
-<details>
-<summary>Models and preview settings</summary>
-
-Sonnet is the default. Set `model = "haiku"` or `model = "opus"` at the top of
-the config to change it, or inside an action to use that model just for that
-action. A new model is kept ready from the next time you open AI Edit.
-
-Set `preview = false` globally or per action to accept results immediately.
-Set `diff = false` on an action to preview plain text, useful for translations.
-The `width` setting controls the overlay width; the default is `560`.
-
-</details>
-
-<details>
-<summary>Memory</summary>
-
-AI Edit keeps a Claude process ready for each model your actions use, so a
-rewrite takes about a second. After 30 minutes without a rewrite it stops
-them to free their memory (about 170 MB each); the first rewrite after that
-takes a few seconds longer. Set `idle_timeout` to the number of minutes you
-want, or to `0` to keep Claude ready all the time.
-
-</details>
+| Field | Required | What it does |
+| --- | --- | --- |
+| `key` | yes | One lowercase letter, unique. Keep **c** free for custom instructions. |
+| `label` | yes | The name in the list and in the result's header. |
+| `instruction` | yes | What to do with the text. Write it as you would to a careful editor: what to change and what to leave alone. Keeping the language, no preamble and no em dashes are already asked for. |
+| `model` | no | Use this model for this action only. |
+| `preview` | no | Overrides the global `preview` for this action. |
+| `diff` | no | `false` previews plain text instead of what changed; right for translations. |
+| `id` | no | Name for `ai-edit run <id>` from a terminal; by default the label in lower case. |
 
 ## What happens to your text
 
@@ -156,16 +161,24 @@ clipboard.
 
 A small shell script handles selection and paste, a service inside the
 Omarchy shell keeps Claude ready (about 170 MB, nearly all of it Claude Code
-itself, stopped after 30 minutes without use), and a QML overlay shows the result. From a terminal, `ai-edit run`
-starts Claude fresh, which takes a second longer.
+itself, stopped after 30 minutes without use), and a QML overlay shows the
+result. From a terminal, `ai-edit run` starts Claude fresh, which takes a
+second longer.
 
-See the [design notes](docs/plan.md) for the architecture and measurements.
+See the [design notes](docs/design.md) for the architecture and measurements.
 To run the tests without a compositor or Claude requests:
 
 ```bash
 bin/ai-edit selftest
 tests/claude-test
 ```
+
+## Roadmap
+
+- **More coding agents.** Codex and the other agents Omarchy can set up, not
+  only Claude Code, following the agent you already use.
+- **An action on its own key**, such as Super+Shift+F to fix the selection
+  without opening the list first.
 
 ## Credits & license
 

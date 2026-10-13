@@ -5,9 +5,9 @@ second later the overlay shows what changed; Enter pastes it over the
 selection, Esc keeps the original. Shift and the letter skips the preview and
 pastes straight away.
 
-This document is the design and the build order. It records what was measured
-on Paul's machine (Omarchy, Hyprland 0.56.2, October 2026) so decisions do not
-have to be rediscovered. Written for the agent that builds it.
+This document records the design and what was measured while building it
+(Omarchy 4, Hyprland 0.56.2, October 2026), so decisions do not have to be
+rediscovered.
 
 ## Name
 
@@ -100,7 +100,7 @@ the requested mini models on the subscription used. That did not establish
 Codex's minimum latency; the app-server comparison below supersedes the
 conclusion that Codex is unsuitable.
 
-Measured again with the finished pool (phase 1, claude 2.1.295, haiku 5.5):
+Measured again with the finished pool (claude 2.1.295, haiku 5.5):
 the local part of a turn (socket, pool, jq, Python) is about 0.1 s; the rest
 is the API, which varied from 1.0 to 1.6 s with requests spaced a few seconds
 apart and from 1.2 to 3.0 s on other runs of ten in a row. A replacement
@@ -216,14 +216,14 @@ below removes the personal instructions and coding-tool context.
 
 #### Follow-up: isolated rewrite context
 
-The reproducible [Codex benchmark](../tests/codex-benchmark) runs the same
+The reproducible [Codex benchmark](benchmarks/codex-benchmark) runs the same
 six synthetic texts twice, without loading personal Codex configuration.
 It requires Linux, `bwrap`, existing file-based Codex authentication and a
 cached model catalog. Tested with Codex CLI 0.162.0.
 
 ```sh
-python3 tests/codex-benchmark gpt-6.1-sol --output /tmp/codex-standard.json
-python3 tests/codex-benchmark gpt-6.1-sol --tier priority --output /tmp/codex-fast.json
+python3 docs/benchmarks/codex-benchmark gpt-6.1-sol --output /tmp/codex-standard.json
+python3 docs/benchmarks/codex-benchmark gpt-6.1-sol --tier priority --output /tmp/codex-fast.json
 ```
 
 A private mount namespace masks the entire Codex configuration directory
@@ -289,7 +289,7 @@ sleep 0.05
 hyprctl dispatch "hl.dsp.send_key_state({ mods = 'CTRL', key = 'C', state = 'up' })"
 ```
 
-Phase 2 measured `send_key_state` for every kind of window, so there is no
+`send_key_state` was then measured for every kind of window, so there is no
 wtype fallback: Chromium on Wayland and on XWayland copied on the first press
 (capture 0.2 s) and pasted (insert 0.75 s, most of it the fixed waits); foot
 pasted on Shift+Insert. The very first attempt on a fresh Wayland Chromium
@@ -432,28 +432,10 @@ The diff is computed by `bin/ai-edit diff` (Python `difflib` on words with
 whitespace tokens kept) and written as `diff.json`, a list of
 `{"op": "equal|del|ins", "text": ...}` segments the QML renders.
 
-## Build order
-
-Each phase ends with something Paul can try, and is committed on its own.
-
-1. **ai-edit-agent and `ai-edit run`**. Service, socket, warm pool, cold fallback,
-   `ai-edit run fix <<< 'text'` from a terminal. Done when ten rewrites in a row
-   take ≤ 1.5 s on haiku and `systemctl --user status ai-edit-agent` is clean.
-2. **capture and insert**. `ai-edit capture` then `ai-edit insert` round trips in
-   Brave, Signal, Slack (XWayland) and foot. `ai-edit selftest` covers the copy
-   loop with stubbed presses, like OmaPen's.
-3. **prompts and config** with the shipped defaults; `ai-edit run` honours model
-   and preview per action.
-4. **overlay** with the four states and the diff; `omarchy plugin validate`
-   passes; `Super+E` bound.
-5. **polish and dotfiles**: README with the three promises, install
-   instructions (`omarchy plugin add`, `systemctl --user enable --now
-   ai-edit-agent`), and the dotfiles changes below. Optional: the `api` backend.
-
 ## Open points
 
 - Whether the result should stream into the overlay. At ~1 s a full result is
-  fine; streaming makes the diff jump. Decide after phase 4.
+  fine; streaming makes the diff jump.
 - A bar widget is deliberately absent. If a status indicator for the agent
   service is ever wanted, it is a separate, optional kind.
 - An action as a Hyprland binding, so Super+Shift+F is Fix without the

@@ -23,7 +23,7 @@ p.add_argument("--inspect", action="store_true", help="Check context without a r
 p.add_argument("--output", type=pathlib.Path, required=True)
 args = p.parse_args()
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMP = tempfile.TemporaryDirectory(prefix='ai-edit-codex-benchmark-')
 WORK = pathlib.Path(TEMP.name)
 SYSTEM = (ROOT / 'system-prompt.txt').read_text().strip()

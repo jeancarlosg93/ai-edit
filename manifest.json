@@ -4,6 +4,7 @@
   "name": "AI Edit",
   "version": "0.1.0",
   "author": "Paul Middelkoop",
+  "repository": "https://github.com/paulmiddelkoop/ai-edit",
   "description": "Rewrite the selected text with a keystroke and see the difference before it is pasted back",
   "kinds": [
     "overlay",

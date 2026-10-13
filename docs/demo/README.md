@@ -30,7 +30,7 @@ Check a frame of a new take before committing
 (`ffmpeg -ss <t> -i raw.mp4 -frames:v 1 f.png`), and look at the whole loop
 for anything private.
 
-Choices, made with Paul and Codex on October 13, 2026:
+Choices, made on October 13, 2026:
 
 - A real app everybody knows, not a mock-up; everyday texts, no jokes; the
   keys as keycaps (`caption.py`) on a strip below the picture, so they never
