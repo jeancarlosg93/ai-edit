@@ -36,14 +36,24 @@ label = "Improve"
 instruction = """
 Improve this text where it is muddled: untangle sentences, put the points \
 in a logical order and remove repetition. Keep the author's voice, wording \
-and tone. Add nothing, do not flatten it into a corporate tone, and avoid \
-typical AI phrasing. Keep the language of the text."""
+and tone, and every fact, request and commitment. Add nothing, do not \
+flatten it into a corporate tone, and avoid typical AI phrasing. Keep the \
+language of the text."""
+
+[[action]]
+key = "s"
+label = "Shorten"
+instruction = """
+Make the text more concise: remove repetition and words that add nothing. \
+Keep its meaning, key details, requests and commitments, and the author's \
+voice and tone; do not make it abrupt or turn it into notes. Add nothing. \
+If it is already concise, leave it as it is. Keep the language of the text."""
 
 [[action]]
 key = "e"
 label = "English"
 diff = false
 instruction = """
-Translate the text into English, matching the register of the original. \
-Correct spelling and grammar on the way. If the text is already English, \
-only correct its spelling and grammar."""
+Translate the text into natural English, matching the register and tone of \
+the original. Correct spelling and grammar on the way. If the text is \
+already English, only correct its spelling and grammar."""

@@ -348,7 +348,9 @@ Correct spelling, grammar and punctuation only. ..."""
 ```
 
 An action's id, for `ai-edit run <id>`, is its label in lower case (the key
-works too). The shipped actions suit most people (Fix, Improve, English).
+works too). The shipped actions suit most people (Fix, Improve, Shorten,
+English; tone changes are left to the custom prompt, chosen with Paul and
+Codex for the README demo on October 13, 2026).
 
 `preview` is the default; an action may override it; Shift inverts whichever
 applies. `model` is the default for actions without one. Translations keep

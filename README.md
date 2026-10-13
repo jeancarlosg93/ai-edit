@@ -47,14 +47,16 @@ to fix it. Review the changes and press **Enter**.
 | --- | --- | --- |
 | **f** | Fix | Correct spelling, grammar and punctuation. Keep your phrasing. |
 | **i** | Improve | Untangle sentences and remove repetition. Keep your voice. |
+| **s** | Shorten | Cut repetition and filler. Keep the details, requests and tone. |
 | **e** | English | Translate into English, keeping the tone of the original. |
-| **c** | Custom | Give your own instruction: "make this shorter", "sound a little warmer" or "translate into Swedish". |
+| **c** | Custom | Give your own instruction: "make it friendlier", "more formal" or "translate into Swedish". |
 
 For translations and custom instructions, the preview shows the full result
 without highlighting individual changes.
 
-You can also build on a result. Improve a message, press **Tab** to see the
-actions, then **e** to translate it. **Backspace** takes you back one step.
+You can also build on a result. Shorten a message, then press **c** and type
+"make it friendlier", or press **e** to translate it. **?** shows the actions
+on a result and **Backspace** takes you back one step.
 
 **Nothing selected?** Super+E opens an empty field. Type something and press
 Tab, or paste your text, then choose an action. The result goes to your
@@ -68,10 +70,10 @@ field, type normally and press Tab to return to the actions.
 
 | Key | What it does |
 | --- | --- |
-| Action letter | Run that action; on a result, run it on that result (Improve, then English) |
+| Action letter | Run that action; on a result, run it on that result (Shorten, then English) |
 | Shift+letter | Skip the preview and paste or copy the result |
 | c | Write a custom instruction |
-| Tab | Switch between text and actions |
+| Tab | Switch between the text and the actions, before an action runs |
 | Enter | Accept the result: paste over your selection, or copy in clipboard mode |
 | y | Copy the result |
 | Backspace or ← | Go back one step |
@@ -99,12 +101,12 @@ with `compact = true`, or add your own actions. For example, append:
 
 ```toml
 [[action]]
-key = "s"
-label = "Shorten"
-instruction = "Make this text shorter. Keep the main points, wording and tone."
+key = "w"
+label = "Warmer"
+instruction = "Make the tone a little warmer and friendlier. Keep the meaning and the length."
 ```
 
-Now **s** shortens your selection. Each action needs a unique lowercase key,
+Now **w** warms up your selection. Each action needs a unique lowercase key,
 a label and an instruction. Keep **c** free if you want custom instructions.
 
 Settings you leave out keep their defaults. If you define actions, your list
