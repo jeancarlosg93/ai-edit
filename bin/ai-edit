@@ -111,9 +111,14 @@ window_exists() {
 save_clipboard() {
   local types type
   rm -f "$SAVED_TYPE" "$SAVED_DATA"
-  # wl-paste waits for the owning app, which may hang.
-  types=$(timeout 1 wl-paste --list-types 2>/dev/null) || return 0
-  [[ -n $types ]] || return 0
+  # wl-paste waits for the owning app, which may hang; then what is on the
+  # clipboard is unknown. Any other failure means it is empty.
+  types=$(timeout 1 wl-paste --list-types 2>/dev/null)
+  case $? in
+    0) [[ -n $types ]] || return 0 ;;
+    124) return 1 ;;
+    *) return 0 ;;
+  esac
   type=$(grep -m1 -E '^image/png$' <<<"$types" ||
     grep -m1 -E '^text/plain;charset=utf-8$' <<<"$types" ||
     head -1 <<<"$types")
@@ -155,7 +160,11 @@ copy_selection() {
   while (($(now_ms) < deadline)); do
     sleep 0.025
     if timeout 1 wl-paste --list-types 2>/dev/null | grep -qiE '^(text/|UTF8_STRING$)'; then
-      timeout 2 wl-paste --no-newline --type text >"$CAPTURE" 2>/dev/null
+      if ! timeout 2 wl-paste --no-newline --type text >"$CAPTURE" 2>/dev/null; then
+        # A transfer that was cut off holds only part of the selection.
+        : >"$CAPTURE"
+        return 1
+      fi
       [[ -s $CAPTURE ]] && return 0
     fi
   done
@@ -543,6 +552,21 @@ selftest() {
     [[ ! -e $STATE_DIR/pressed ]] && jq -e '.source == "compose"' "$SESSION" >/dev/null
   )
   check "a clipboard that cannot be saved is left alone" unreadable_clipboard
+  hung_clipboard() (
+    hyprctl() { printf '{"address": "0xbeef", "xwayland": false, "tags": []}'; }
+    wl-paste() { return 124; }
+    press() { echo pressed >>"$STATE_DIR/pressed"; }
+    rm -f "$STATE_DIR/pressed"
+    capture
+    [[ ! -e $STATE_DIR/pressed ]] && jq -e '.source == "compose"' "$SESSION" >/dev/null
+  )
+  check "a clipboard owner that hangs is left alone" hung_clipboard
+  cut_off() (
+    press() { :; }
+    wl-paste() { [[ $1 == --list-types ]] && printf 'text/plain;charset=utf-8\n' || { printf 'part'; return 124; }; }
+    ! copy_selection wayland && [[ ! -s $CAPTURE ]]
+  )
+  check "a copy that was cut off is not a selection" cut_off
 
   session_kept() {
     printf 'He said "no", then left.\nTwice.\n' >"$CAPTURE"
