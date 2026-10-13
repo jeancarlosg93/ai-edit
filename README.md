@@ -9,6 +9,8 @@ shows what changed; **Enter** puts the result back.
 An [Omarchy](https://omarchy.org) plugin for the moments when you know what you
 want to say and just want a hand saying it.
 
+![Fixing typos in a Gmail message: select the text, press Super+E and F, review the red and green changes, press Enter to paste the corrected text](docs/demo/fix.gif)
+
 - **Stay in your app.** Edit the text you're already writing, without opening
   a chat and copying the answer back.
 - **Keep your voice.** Fix corrects mistakes; Improve clears up muddled
@@ -57,6 +59,8 @@ without highlighting individual changes.
 You can also build on a result. Shorten a message, then press **c** and type
 "make it friendlier", or press **e** to translate it. **?** shows the actions
 on a result and **Backspace** takes you back one step.
+
+![Shortening a Gmail message with S, then pressing C and typing "Make it friendlier" to refine the shortened result before pasting it with Enter](docs/demo/steer.gif)
 
 **Nothing selected?** Super+E opens an empty field. Type something and press
 Tab, or paste your text, then choose an action. The result goes to your

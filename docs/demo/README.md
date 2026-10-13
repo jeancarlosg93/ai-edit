@@ -1,36 +1,58 @@
-# The README demo
+# The README demos
 
-`docs/demo.gif` shows AI Edit fixing a short email in Gmail: select, Super+E,
-F, the diff, Enter. It is made in two steps:
+Two GIFs, both real takes in a Gmail compose window with the shipped actions:
+
+- `fix.gif` (top of the README): select, Super+E, F, the diff, Enter.
+- `steer.gif` (next to chaining): Shorten, then C and "Make it friendlier"
+  on that result, Enter.
 
 ```bash
-docs/demo/record-gmail.sh /tmp/ai-edit-demo   # about 20 s on the live desktop
-docs/demo/make-gif.sh /tmp/ai-edit-demo       # writes docs/demo.gif
+docs/demo/record.sh /run/user/$UID/ai-edit-demo/fix fix       # about 25 s
+docs/demo/record.sh /run/user/$UID/ai-edit-demo/steer steer   # about 35 s
+CUT_TOP=40 CUT_BOTTOM=298 docs/demo/make-gif.sh /run/user/$UID/ai-edit-demo/fix "$PWD/docs/demo/fix.gif"
+CUT_TOP=40 CUT_BOTTOM=298 docs/demo/make-gif.sh /run/user/$UID/ai-edit-demo/steer "$PWD/docs/demo/steer.gif"
 ```
 
-Before recording, open Gmail in Brave (dark mode) with an empty "New
-message", the cursor in Subject. The recording switches the theme to Tokyo
-Night (Omarchy's default) and back, makes Brave fullscreen and back, pastes
-the message into the body, and empties it again afterwards. It aborts before
-F or Enter when the overlay is not open, so no key can reach Gmail and send
-anything.
+Before recording, open a Gmail compose pop-out (Shift+click Compose) from an
+account that may be shown, with To empty and the cursor in the body. The
+recording takes over the desktop for its duration: it moves your own
+`~/.config/ai-edit/config.toml` aside so the shipped actions show, switches
+to Tokyo Night (Omarchy's default), turns on do-not-disturb, floats the
+pop-out above the overlay and pastes the text. It refuses a body that is not
+empty. Afterwards it empties the body it filled and puts everything back,
+the window's place and tiling included, also when it aborts. It aborts before any key that
+would reach Gmail when the overlay is not open, and with To empty nothing can
+be sent. A draft stays behind in Gmail; discard it.
 
-Choices made with Paul:
+The crop is the pop-out window, minus Zen's address bar (`CUT_TOP`) and the
+empty space and toolbar below the overlay (`CUT_BOTTOM`), in logical pixels.
+Check a frame of a new take before committing
+(`ffmpeg -ss <t> -i raw.mp4 -frames:v 1 f.png`), and look at the whole loop
+for anything private.
 
-- A real app everybody knows, not a mock-up; Gmail's compose window shows
-  nothing private once Brave is fullscreen and the crop stays inside it.
-  Slack showed the workspace name and old messages around the composer.
-- An ordinary message with everyday typos; jokes in the text fell flat.
-- The keys as keyboard keycaps (`caption.py`, SVG through rsvg-convert),
-  with a short label; plain text boxes did not read as keys.
-- Start with the text unselected and show Ctrl+A, so the whole gesture is
-  visible (the first take started with the text already selected).
+Choices, made with Paul and Codex on October 13, 2026:
 
-To make it better next time:
+- A real app everybody knows, not a mock-up; everyday texts, no jokes; the
+  keys as keycaps (`caption.py`) on a strip below the picture, so they never
+  cover the text or the overlay's hints.
+- Two short loops rather than one long one: the hero shows the core gesture
+  and the diff; the second shows building on a result and steering it with
+  your own words. Translation, Backspace and compose mode are left to the
+  text.
+- The texts were rehearsed against the real model: Fix gave the same three
+  corrections every time. "Warmer, but still brief" invented a fun day out
+  and grew the text; "Make it friendlier" did not.
+- The real waiting time is kept; only the setup is cut.
 
-- Use a small compose window (Gmail's pop-out, or Brave not fullscreen but
-  a small floating window) so the text and the overlay sit close together
-  and the GIF can be cropped tighter. Now the overlay sits right of centre,
-  because it opens in the middle of the screen while the text is top left.
-- Check the crop, cursor box and caption times in `make-gif.sh` against the
-  frames of the new take (`ffmpeg -ss <t> -i raw.mp4 -frames:v 1 f.png`).
+Pitfalls met on the way:
+
+- Keys are sent with `hyprctl dispatch hl.dsp.send_key_state`, as
+  `bin/ai-edit` does. wtype leaves its own keymap in the client, after which
+  Zen read the compositor's Ctrl+C as another key; and `wtype -M ctrl plus`
+  types p, l, u, s with Ctrl held (print, address bar, source, save).
+- A result is ready when `result.txt` is newer than the key, not when it
+  exists: the previous one stays while a new rewrite runs.
+- The marks are placed on the video's own timeline from the moment the
+  recorder stopped, since it starts filming a moment after it is launched.
+- `palettegen` with `stats_mode=diff` dropped the green of the insertions;
+  `stats_mode=full` keeps it.
