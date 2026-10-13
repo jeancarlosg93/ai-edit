@@ -24,6 +24,10 @@ Item {
   property bool closing: false
   Component.onDestruction: root.closing = true
   property var models: []
+  // Minutes without use after which the waiting processes are stopped to
+  // free their memory; 0 keeps them. A busy process is never in idle.
+  property int idleTimeout: 30
+  property real lastUse: Date.now()
   // model -> the process waiting for that model's next turn
   property var idle: ({})
 
@@ -41,6 +45,7 @@ Item {
     // The model drops the whitespace around a selection (the newline a
     // triple-click takes along); it goes back around the answer.
     var start = text.indexOf(core)
+    root.lastUse = Date.now()
     var worker = root.take(model)
     if (!worker) {
       fail("claude could not be started")
@@ -55,8 +60,11 @@ Item {
   }
 
   // The models the actions use; the overlay passes them when it opens, so a
-  // model added to the config is warm from the next rewrite on.
-  function keepWarm(list) {
+  // model added to the config is warm from the next rewrite on. Opening counts
+  // as use: a process stopped for idleness starts while a letter is chosen.
+  function keepWarm(list, idleTimeout) {
+    if (typeof idleTimeout === "number" && idleTimeout >= 0) root.idleTimeout = idleTimeout
+    root.lastUse = Date.now()
     var unique = []
     for (var i = 0; i < list.length; i++)
       if (list[i] && unique.indexOf(list[i]) === -1) unique.push(list[i])
@@ -101,6 +109,16 @@ Item {
     var next = Object.assign({}, root.idle)
     next[model] = root.spawn(model)
     root.idle = next
+  }
+
+  function dormant() {
+    return root.idleTimeout > 0 && Date.now() - root.lastUse >= root.idleTimeout * 60000
+  }
+
+  function sleep() {
+    var waiting = root.idle
+    root.idle = ({})
+    for (var model in waiting) if (waiting[model]) waiting[model].retire()
   }
 
   function take(model) {
@@ -229,12 +247,17 @@ Item {
   }
 
   // Replaces waiting processes that died or are older than an hour (auth and
-  // updates are picked up when claude starts).
+  // updates are picked up when claude starts), or stops them after
+  // idleTimeout minutes without use.
   Timer {
     interval: 30000
     running: true
     repeat: true
     onTriggered: {
+      if (root.dormant()) {
+        root.sleep()
+        return
+      }
       for (var i = 0; i < root.models.length; i++) root.warm(root.models[i])
     }
   }
@@ -260,13 +283,15 @@ Item {
     stdout: StdioCollector { id: configOut; waitForEnd: true }
     onExited: function(code) {
       var list = ["sonnet"]
+      var idleTimeout
       if (code === 0) {
         try {
           var settings = JSON.parse(configOut.text)
           list = [settings.config.model].concat(settings.actions.map(function(a) { return a.model }))
+          idleTimeout = settings.config.idle_timeout
         } catch (e) {}
       }
-      root.keepWarm(list)
+      root.keepWarm(list, idleTimeout)
     }
   }
 }

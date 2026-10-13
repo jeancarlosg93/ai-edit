@@ -16,7 +16,7 @@ from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "ai-edit"
-SETTINGS = ("model", "preview", "compact", "width", "backend")
+SETTINGS = ("model", "preview", "compact", "width", "backend", "idle_timeout")
 
 
 class ConfigError(Exception):
@@ -41,6 +41,9 @@ def resolve(defaults, user):
     config = {key: defaults[key] for key in SETTINGS if key in defaults}
     config.setdefault("backend", "agent")
     config.update({key: user[key] for key in SETTINGS if key in user})
+    idle = config.get("idle_timeout", 30)
+    if isinstance(idle, bool) or not isinstance(idle, int) or idle < 0:
+        raise ConfigError(f"{CONFIG_DIR / 'config.toml'}: idle_timeout must be a whole number of minutes, 0 or more")
 
     path = CONFIG_DIR / "config.toml" if "action" in user else PLUGIN_DIR / "config.toml"
     actions, keys, ids = [], set(), set()

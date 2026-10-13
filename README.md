@@ -123,6 +123,17 @@ The `width` setting controls the overlay width; the default is `560`.
 
 </details>
 
+<details>
+<summary>Memory</summary>
+
+AI Edit keeps a Claude process ready for each model your actions use, so a
+rewrite takes about a second. After 30 minutes without a rewrite it stops
+them to free their memory (about 170 MB each); the first rewrite after that
+takes a few seconds longer. Set `idle_timeout` to the number of minutes you
+want, or to `0` to keep Claude ready all the time.
+
+</details>
+
 ## What happens to your text
 
 AI Edit sends the text you choose to Claude through Claude Code, using your
@@ -138,8 +149,8 @@ clipboard.
 ## Under the hood
 
 A small shell script handles selection and paste, a service inside the
-Omarchy shell keeps Claude ready (about 240 MB, nearly all of it Claude Code
-itself), and a QML overlay shows the result. From a terminal, `ai-edit run`
+Omarchy shell keeps Claude ready (about 170 MB, nearly all of it Claude Code
+itself, stopped after 30 minutes without use), and a QML overlay shows the result. From a terminal, `ai-edit run`
 starts Claude fresh, which takes a second longer.
 
 See the [design notes](docs/plan.md) for the architecture and measurements.

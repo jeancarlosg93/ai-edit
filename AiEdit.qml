@@ -134,7 +134,7 @@ Item {
     root.expanded = root.config.compact !== true
     var service = root.shell && typeof root.shell.serviceFor === "function" ? root.shell.serviceFor("ai-edit") : null
     if (service)
-      service.keepWarm([root.config.model].concat(root.actions.map(function(a) { return a.model })))
+      service.keepWarm([root.config.model].concat(root.actions.map(function(a) { return a.model })), root.config.idle_timeout)
     var session = state.session || {}
     root.compose = session.source !== "selection"
     root.copyOnly = root.compose || session.terminal === true || session.editable === "no"

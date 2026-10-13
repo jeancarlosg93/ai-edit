@@ -598,6 +598,7 @@ selftest() {
     cat >"$XDG_CONFIG_HOME/ai-edit/config.toml" <<'TOML'
 model = "haiku"
 preview = false
+idle_timeout = 0
 
 [[action]]
 key = "a"
@@ -615,7 +616,7 @@ TOML
     actions | jq -e 'map({id, key, instruction, model, preview}) == [
       {"id": "make-it-shorter", "key": "a", "instruction": "x", "model": "haiku", "preview": false},
       {"id": "b", "key": "b", "instruction": "y", "model": "opus", "preview": true}]' >/dev/null &&
-      config | jq -e '.backend == "agent" and .width == 560 and .model == "haiku"' >/dev/null
+      config | jq -e '.backend == "agent" and .width == 560 and .model == "haiku" and .idle_timeout == 0' >/dev/null
   )
   check "your config overrides settings and replaces actions" configured
   broken_config() (
@@ -625,7 +626,11 @@ TOML
     ! (actions >/dev/null 2>&1) || exit 1
     printf '[[action]]\nkey = "a"\nlabel = "A"\ninstruction = "x"\n[[action]]\nkey = "a"\nlabel = "B"\ninstruction = "y"\n' \
       >"$XDG_CONFIG_HOME/ai-edit/config.toml"
-    [[ $(actions 2>&1) == *"used twice"* ]]
+    [[ $(actions 2>&1) == *"used twice"* ]] || exit 1
+    for value in -1 1.5 '"30"' true; do
+      printf 'idle_timeout = %s\n' "$value" >"$XDG_CONFIG_HOME/ai-edit/config.toml"
+      [[ $(config 2>&1) == *"idle_timeout must be"* ]] || exit 1
+    done
   )
   check "a broken config is an error that says why" broken_config
   action_ids() (
@@ -657,7 +662,8 @@ TOML
 
   shipped_actions() (
     export XDG_CONFIG_HOME=$STATE_DIR/empty
-    actions | jq -e 'length > 0 and all(.[]; (.id | length > 0) and (.label | length > 0))' >/dev/null
+    actions | jq -e 'length > 0 and all(.[]; (.id | length > 0) and (.label | length > 0))' >/dev/null &&
+      config | jq -e '.idle_timeout == 30' >/dev/null
   )
   check "the shipped actions load" shipped_actions
 

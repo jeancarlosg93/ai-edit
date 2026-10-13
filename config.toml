@@ -10,6 +10,10 @@ preview = true
 compact = false
 # Width of the overlay.
 width = 560
+# Minutes without a rewrite after which the Claude process kept ready is
+# stopped to free its memory (about 170 MB per model). The next rewrite then
+# takes a few seconds longer. 0 keeps it ready all the time.
+idle_timeout = 30
 
 # An action needs a key (one lowercase letter), a label and an instruction.
 # Optional: model, preview, and diff = false to show the result as plain text

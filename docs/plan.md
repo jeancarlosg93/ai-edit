@@ -139,6 +139,13 @@ same behaviour):
 - Timeout 60 s per turn; on error or a dead process, kill, respawn, report.
 - A process that has been idle for more than an hour is recycled (claude
   auto-updates and auth refresh happen on start).
+- After `idle_timeout` minutes (default 30, 0 = never) without a rewrite or
+  an opened overlay, the waiting processes are stopped, so a plugin used a
+  few times a day does not hold about 170 MB per model all day (RSS 240 MB,
+  PSS 160 MB: the rest is shared with other Claude Code processes); many
+  Omarchy machines have 8 to 16 GB. Opening the overlay starts them again,
+  so the cold start mostly overlaps with choosing an action. Busy processes
+  are never stopped: they are no longer in the pool.
 - `bin/ai-edit run` falls back to a cold `claude -p` with the same flags when
   the socket is absent, so the plugin works without the service, just slower.
 - System prompt: take OmaPen's (`SYSTEM_PROMPT` in `omapen-claude`) as the
@@ -331,6 +338,7 @@ model = "sonnet"
 preview = true
 compact = false
 width = 560
+idle_timeout = 30
 
 [[action]]
 key = "f"
