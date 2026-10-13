@@ -23,3 +23,5 @@ design, the measurements behind it and the open points; read it first.
   `$XDG_RUNTIME_DIR` only.
 - Only add a comment when it says something the code cannot: a hidden
   constraint, an invariant, a workaround.
+- If `AGENTS.local.md` exists next to this file, read and follow it too: it
+  holds the maintainer's local notes and is not part of the repository.
