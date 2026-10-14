@@ -40,6 +40,8 @@ got=$(python3 -c 'import json; print(json.dumps({"instruction": "echo", "text": 
   FAKE_CLAUDE_DEAF=1 "$root/bin/ai-edit-claude")
 expect "timeout covers a blocked write" '{"error": "claude did not answer within 2 s"}' "$got"
 expect "blocked write ends in time" yes "$( ((SECONDS - started <= 5)) && echo yes || echo no)"
+# A custom instruction from the terminal, end to end through bin/ai-edit.
+expect "custom instruction" "HELLO THERE" "$(printf 'hello there' | AI_EDIT_INSTRUCTION=echo "$root/bin/ai-edit" run -)"
 expect "bad request" '{"error": "request is not JSON"}' "$(echo nope | "$root/bin/ai-edit-claude")"
 sleep 0.5
 expect "no stray processes" 0 "$(pgrep -fc "$AI_EDIT_CLAUDE")"

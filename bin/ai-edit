@@ -424,9 +424,10 @@ run() {
   backend=$(jq -r .config.backend <<<"$all")
   [[ $backend == agent ]] || die "unknown backend '$backend'"
 
-  # The text travels in files and pipes only: as an argument it would show in
-  # /proc to every process on the machine, and bash puts a large here-string
-  # in /tmp.
+  # The text and the instruction travel in files and pipes only: as an
+  # argument they would show in /proc to every process on the machine, and
+  # bash puts a large here-string in /tmp. printf is a builtin, so the action
+  # never becomes an argument either.
   mkdir -p "$STATE_DIR"
   rm -f "$RESULT" "$DIFF"
   if [[ -t 0 ]]; then
@@ -438,8 +439,8 @@ run() {
 
   local reply
   reply=$(mktemp "$STATE_DIR/reply.XXXXXX") || die "cannot write to $STATE_DIR"
-  jq -cRs --argjson action "$action" \
-    '{model: $action.model, instruction: $action.instruction, text: .}' <"$ORIGINAL" |
+  printf '%s' "$action" |
+    jq -c --rawfile text "$ORIGINAL" '{model, instruction, text: $text}' |
     "$PLUGIN_DIR/bin/ai-edit-claude" >"$reply"
 
   if ! jq -e 'has("text")' "$reply" >/dev/null 2>&1; then
@@ -463,14 +464,15 @@ word_diff() {
   cat "$DIFF"
 }
 
-# Everything the overlay needs when it opens, in one call.
+# Everything the overlay needs when it opens, in one call. The actions'
+# instructions go through a pipe, not an argument.
 state() {
   local all
   all=$(settings) || exit 1
   if [[ -f $SESSION ]]; then
-    jq -c --argjson all "$all" '$all + {session: .}' "$SESSION"
+    { printf '%s\n' "$all"; cat "$SESSION"; } | jq -cs '.[0] + {session: .[1]}'
   else
-    jq -cn --argjson all "$all" '$all + {session: {text: "", source: "compose", address: ""}}'
+    printf '%s' "$all" | jq -c '. + {session: {text: "", source: "compose", address: ""}}'
   fi
 }
 
@@ -761,6 +763,14 @@ TOML
   )
   check "action ids are unique and an id beats a key" action_ids
 
+  overlay_state() (
+    export XDG_CONFIG_HOME=$STATE_DIR/empty
+    printf '{"text": "x\\ny", "source": "selection", "address": "0xbeef"}' >"$SESSION"
+    state | jq -e '.session.text == "x\ny" and (.actions | length > 0) and .config.model' >/dev/null || exit 1
+    rm -f "$SESSION"
+    state | jq -e '.session.source == "compose"' >/dev/null
+  )
+  check "the overlay gets settings, actions and session in one" overlay_state
   shipped_actions() (
     export XDG_CONFIG_HOME=$STATE_DIR/empty
     actions | jq -e 'length > 0 and all(.[]; (.id | length > 0) and (.label | length > 0))' >/dev/null &&
