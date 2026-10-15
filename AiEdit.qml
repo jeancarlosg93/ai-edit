@@ -79,15 +79,20 @@ Item {
   property color inserted: "#a6e3a1"
   readonly property int cornerRadius: Style.cornerRadius
   property string fontFamily: Style.font.menuFamily
-  property int contentMargin: Style.spacing.panelPadding
-  property int contentSpacing: Style.spacing.md
-  property int headerHeight: Math.max(Style.space(34), Style.font.title + Style.spacing.controlPaddingY * 2)
-  property int cardWidth: Math.min(Style.space(config.width || 560), panel.width - Style.gapsOut * 2)
-  property int textMaxHeight: Math.round(panel.height * 0.4)
+  property int contentMargin: Style.spacing.popupPadding
+  property int contentSpacing: Style.spacing.lg
+  property int headerHeight: Math.max(Style.space(24), Style.font.title + Style.spacing.sm * 2)
+  property int cardWidth: Math.min(Style.space(config.width || 480), panel.width - Style.gapsOut * 2)
+  property int textMaxHeight: Math.max(Style.font.title * 2, Math.min(
+    Math.round(panel.height * 0.4), panel.height - Style.gapsOut * 2
+      - card.contentTopInset - card.contentBottomInset - root.headerHeight
+      - (actionBox.visible ? actionBox.height + root.contentSpacing : 0)
+      - (promptField.visible ? promptField.height + root.contentSpacing : 0)
+      - footer.implicitHeight - root.contentSpacing * 2))
   property color selectedBackground: Color.menu.selectedBackground
   property color selectedText: Color.menu.selectedText
   property var selectedBorderSpec: Border.surfaceSpec("menu", "selected-border", Color.menu.selectedBorder, 0)
-  readonly property int actionRowHeight: Math.max(Style.space(50), Style.font.body + Style.spacing.rowPaddingX * 2)
+  readonly property int actionRowHeight: Math.max(Style.space(32), Style.font.title + Style.spacing.sm * 2)
   readonly property int actionRowPeek: Math.round(root.actionRowHeight * 0.55)
 
   function open(payloadJson) {
@@ -407,12 +412,13 @@ Item {
   }
 
   readonly property var hints: root.mode === "busy" ? [["Esc", "cancel"]]
+    : root.promptOpen ? [["↵", "run"], ["⇧", "skip preview"], ["Esc", "back"]]
     : root.mode === "diff" ? (root.showNext && root.cursorActive ? [["↵", "run"], ["y", "copy"]]
         : root.copyOnly ? [["↵", "copy"]] : [["↵", "paste"], ["y", "copy"]])
         .concat([["?", root.showNext ? "hide actions" : "actions"], ["⌫", "back"], ["Esc", "close"]])
     : root.mode === "error" ? (root.canRetryWithCodex ? [["↵", "retry with Codex"]] : []).concat([["⌫", "back"], ["Esc", "close"]])
     : editor.activeFocus ? [["Tab", "choose action"], ["Esc", "close"]]
-    : [["⇧", root.copyOnly ? "copy without preview" : "paste without preview"], ["Tab", "edit"], ["Esc", "close"]]
+    : [["↵", "run"], ["Tab", "edit"], ["⇧", "skip preview"], ["Esc", "close"]]
 
   function leaveEditor() {
     if (editor.text.trim()) keyCatcher.forceActiveFocus()
@@ -698,7 +704,7 @@ Item {
             color: root.foreground
             opacity: 0.58
             font.family: root.fontFamily
-            font.pixelSize: Style.font.heading
+            font.pixelSize: Style.font.title
             elide: Text.ElideRight
           }
 
@@ -780,7 +786,8 @@ Item {
         Item {
           id: textBlock
           width: parent.width
-          height: Math.min(Math.max(shown.implicitHeight, Style.font.title * 2), root.textMaxHeight)
+          visible: !root.providerPickerOpen
+          height: Math.min(Math.max(shown.implicitHeight, Style.font.title * (root.compose && editor.text === "" ? 2 : 1.5)), root.textMaxHeight)
           readonly property bool showsResult: root.mode === "diff" || (root.mode === "busy" && root.chaining)
           readonly property Item shown: showsResult ? diffText
             : root.mode === "error" ? errorColumn : editor
@@ -904,7 +911,7 @@ Item {
 
         TextField {
           id: promptField
-          visible: root.promptOpen
+          visible: root.promptOpen && !root.providerPickerOpen
           width: parent.width
           placeholderText: "Tell AI Edit what to do with the text"
           font.family: root.fontFamily
@@ -943,7 +950,7 @@ Item {
           }
           // After a run the result is what matters; ? brings the actions
           // back.
-          visible: !root.providerPickerOpen && (root.mode === "diff" ? root.showNext : !textBlock.showsResult && root.expanded)
+          visible: !root.providerPickerOpen && !root.promptOpen && (root.mode === "diff" ? root.showNext : !textBlock.showsResult && root.expanded)
           opacity: root.mode === "busy" ? 0.3 : 1
           enabled: root.mode !== "busy" && !selectionProc.running
 
@@ -1028,15 +1035,17 @@ Item {
         }
 
         Flow {
+          id: footer
+          visible: !root.providerPickerOpen
           width: parent.width
-          spacing: Style.spacing.huge
+          spacing: Style.spacing.xxl
 
           Repeater {
             // In the text field ? is just a character; promise only what works there.
-            model: root.expanded || (root.mode === "diff" && root.showNext) ? root.hints : editor.activeFocus ? [["Tab", "choose action"]] : [["?", "actions"]]
+            model: root.promptOpen || root.expanded || (root.mode === "diff" && root.showNext) ? root.hints : editor.activeFocus ? [["Tab", "choose action"]] : [["?", "actions"]]
             delegate: Row {
               required property var modelData
-              spacing: Style.spacing.md
+              spacing: Style.spacing.sm
 
               Text {
                 textFormat: Text.PlainText

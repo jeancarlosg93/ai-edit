@@ -337,7 +337,7 @@ old-fashioned.
 model = "sonnet"
 preview = true
 compact = false
-width = 560
+width = 480
 idle_timeout = 30
 
 [[action]]
@@ -384,7 +384,7 @@ One window, four states:
 - **error**: the message and the hint (service not running, limit reached).
 
 The action list is one column that looks like Omarchy's keybindings menu
-(Super+K), with the menu's fonts, sizes and margins: "f → Fix" in one colour
+(Super+K), with the menu's font and selection treatment: "f → Fix" in one colour
 (a dimmed letter looked nicer but not the same), a dimmed `↵` where the menu
 puts its `›`, for actions without preview, and the menu's selection bar, moved by the arrow keys and the pointer; Enter (or →) runs the
 selected action, Shift inverts its preview. On a result the bar stays off
@@ -427,6 +427,17 @@ into the empty field goes straight to the actions. Esc in the free prompt field
 closes only that field. The overlay sends the text it shows to `ai-edit run
 <id> --diff` on stdin, so an edit in the field is what gets rewritten; a free
 prompt runs as `ai-edit run -` with the instruction in `AI_EDIT_INSTRUCTION`.
+
+The October 15 density pass reduces the default width from 560 to 480 and
+uses 32-pixel action rows with the theme's title-size text, 14-pixel popup
+padding and a 24-pixel header (all follow Omarchy's spacing/font scale).
+The preview keeps its reading size; short selections take only the space
+they need, while long ones scroll within the remaining screen height.
+The custom prompt hides the action list while typing, and the model picker
+replaces the editor and footer until dismissed. Both preserve the current
+text and focus. Keyboard hints use a tighter single-line layout where they
+fit. Theme colors, menu font, border, rounding and selection bar still come
+from the shell; the smaller footprint does not require `compact = true`.
 
 The diff is computed by `bin/ai-edit diff` (Python `difflib` on words with
 whitespace tokens kept) and written as `diff.json`, a list of

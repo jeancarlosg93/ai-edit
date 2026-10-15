@@ -13,7 +13,7 @@ preview = true
 # Show only the text; the letters keep working and ? shows the actions.
 compact = false
 # Width of the overlay.
-width = 560
+width = 480
 # Minutes without using AI Edit after which the agent process kept ready is
 # stopped to free its memory (about 170 MB per Claude model). The next rewrite then
 # takes a few seconds longer. 0 keeps it ready all the time.

@@ -126,7 +126,7 @@ open AI Edit.
 | `model` | `"sonnet"` | Model for actions that don't name one. When omitted from your config, `agy` defaults to `gemini-3.8-flash-low` and `codex` to `gpt-6.1-sol`. |
 | `preview` | `true` | Show the result before pasting it. Shift with the letter does the opposite. |
 | `compact` | `false` | Hide the action list and key hints; the letters keep working and **?** shows them. |
-| `width` | `560` | Width of the overlay. |
+| `width` | `480` | Width of the overlay. |
 | `idle_timeout` | `30` | Minutes without a rewrite before the waiting agent stops to free its memory (about 170 MB per Claude model). The next rewrite then takes longer. `0` keeps the agent ready all the time. |
 
 ### Switch backend or model

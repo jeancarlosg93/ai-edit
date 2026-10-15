@@ -717,7 +717,7 @@ TOML
     actions | jq -e 'map({id, key, instruction, model, preview}) == [
       {"id": "make-it-shorter", "key": "a", "instruction": "x", "model": "haiku", "preview": false},
       {"id": "b", "key": "b", "instruction": "y", "model": "opus", "preview": true}]' >/dev/null &&
-      config | jq -e '.backend == "agent" and .width == 560 and .model == "haiku" and .idle_timeout == 0' >/dev/null
+      config | jq -e '.backend == "agent" and .width == 480 and .model == "haiku" and .idle_timeout == 0' >/dev/null
   )
   check "your config overrides settings and replaces actions" configured
   broken_config() (
